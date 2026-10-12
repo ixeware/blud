@@ -1,0 +1,6 @@
+pillow
+anthropic
+pydantic
+curl_cffi
+yt-dlp[default,curl-cffi]
+playwright
