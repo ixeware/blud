@@ -1,0 +1,51 @@
+{
+  "id": "ascend-gold",
+  "name": "Ascend Gold",
+  "description": "Премиальный тёмный с золотым градиентным заголовком, звёздами и мягким свечением.",
+  "size": [
+    1080,
+    1440
+  ],
+  "texture": [
+    "stars",
+    "glow",
+    "vignette"
+  ],
+  "vars": {
+    "--bg": "radial-gradient(ellipse at 50% 20%, #1c1a12 0%, #121008 60%, #080703 100%)",
+    "--text": "#f5efe0",
+    "--muted": "#8c8168",
+    "--accent": "#ffd56a",
+    "--good": "#8fe39a",
+    "--info": "#e0c070",
+    "--font-title": "'Unbounded', sans-serif",
+    "--title-weight": "900",
+    "--title-size": "80px",
+    "--title-color": "transparent",
+    "--title-gradient": "linear-gradient(180deg, #fff3cf 0%, #ffd56a 45%, #c8973a 100%)",
+    "--title-filter": "drop-shadow(0 0 22px rgba(255,200,90,.45))",
+    "--kicker-size": "32px",
+    "--kicker-case": "uppercase",
+    "--kicker-color": "#ffd56a",
+    "--kicker-weight": "600",
+    "--sub-font": "'Unbounded', sans-serif",
+    "--sub-weight": "500",
+    "--sub-size": "52px",
+    "--sub-color": "#f5efe0",
+    "--body-size": "36px",
+    "--body-color": "#e7ddc6",
+    "--glow-color": "rgba(255,210,120,.14)",
+    "--vignette-color": "rgba(0,0,0,.55)",
+    "--star-color": "rgba(255,225,160,.8)",
+    "--card-bg": "#f5efe0",
+    "--card-radius": "12px",
+    "--card-border": "1px solid rgba(255,210,120,.4)",
+    "--card-shadow": "0 0 0 1px rgba(255,210,120,.12), 0 16px 40px rgba(0,0,0,.6)",
+    "--pill-bg": "rgba(255,210,120,.12)",
+    "--pill-color": "#ffe6a8",
+    "--pill-border": "1px solid rgba(255,210,120,.35)",
+    "--img-shadow": "drop-shadow(0 10px 24px rgba(0,0,0,.6))",
+    "--watermark-color": "rgba(255,210,120,.05)"
+  },
+  "css": ".kicker{letter-spacing:.22em} .title{letter-spacing:-.01em}"
+}

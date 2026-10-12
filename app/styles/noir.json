@@ -1,0 +1,45 @@
+{
+  "id": "noir",
+  "name": "Noir Editorial",
+  "description": "Журнальный чёрно-белый минимализм: Playfair, тонкая линия, много воздуха.",
+  "size": [
+    1080,
+    1440
+  ],
+  "texture": [
+    "noise"
+  ],
+  "vars": {
+    "--bg": "#0d0d0d",
+    "--text": "#f2f0ea",
+    "--muted": "#7a776f",
+    "--accent": "#d8b46a",
+    "--good": "#9fd17a",
+    "--info": "#9db8d8",
+    "--font-title": "'Playfair Display', serif",
+    "--font-kicker": "'Inter', sans-serif",
+    "--title-weight": "900",
+    "--title-case": "none",
+    "--title-color": "#f6f3ec",
+    "--title-size": "86px",
+    "--title-lh": "0.98",
+    "--kicker-size": "30px",
+    "--kicker-case": "uppercase",
+    "--kicker-color": "#d8b46a",
+    "--kicker-weight": "600",
+    "--sub-font": "'Playfair Display', serif",
+    "--sub-style": "italic",
+    "--sub-weight": "500",
+    "--sub-size": "56px",
+    "--sub-color": "#d8b46a",
+    "--body-color": "#d8d5cd",
+    "--body-size": "36px",
+    "--noise-opacity": ".07",
+    "--card-bg": "#f2f0ea",
+    "--card-radius": "2px",
+    "--card-shadow": "0 18px 40px rgba(0,0,0,.6)",
+    "--img-filter": "grayscale(1) contrast(1.05)",
+    "--watermark-color": "rgba(216,180,106,.06)"
+  },
+  "css": ".kicker{letter-spacing:.32em} .title{margin-top:8px} .kicker::after{content:'';display:block;width:120px;height:2px;background:var(--accent);margin-top:18px}"
+}

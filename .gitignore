@@ -1,4 +1,7 @@
-data/
 __pycache__/
+*.pyc
+userdata/
+data/
 parody/assets/
 parody/out/
+node_modules/

@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>blud studio</title>
+<link rel="stylesheet" href="/static/fonts/fonts.css">
+<link rel="stylesheet" href="/static/slide.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div id="app" class="app">
+  <header class="topbar">
+    <div class="brand">blud<span>studio</span></div>
+    <nav class="tabs">
+      <button class="tab active" data-view="create">Создать</button>
+      <button class="tab" data-view="styles">Стили</button>
+      <button class="tab" data-view="projects">Проекты</button>
+      <button class="tab" data-view="settings">Подключение</button>
+    </nav>
+    <div class="llm-badge" id="llmBadge" title="Текущая модель">—</div>
+  </header>
+
+  <main class="main">
+    <!-- CREATE -->
+    <section class="view" id="view-create">
+      <div class="editor">
+        <aside class="panel compose">
+          <label class="field">
+            <span>Что сгенерировать</span>
+            <textarea id="prompt" rows="5" placeholder="например: пародийный гайд heightmaxxing — как стать выше, стоя рядом с низкими друзьями"></textarea>
+          </label>
+          <div class="row">
+            <label class="field grow">
+              <span>Стиль</span>
+              <select id="styleSelect"></select>
+            </label>
+            <label class="field slim">
+              <span>Слайдов</span>
+              <input id="slideCount" type="number" min="0" max="10" placeholder="авто">
+            </label>
+          </div>
+          <button class="btn primary big" id="genBtn">Сгенерировать</button>
+          <div class="hint" id="genHint"></div>
+
+          <div class="edit-box">
+            <label class="field">
+              <span>Изменить текст каруселью (LLM)</span>
+              <textarea id="editText" rows="2" placeholder="например: сделай подписи смешнее и добавь слайд с выводом"></textarea>
+            </label>
+            <button class="btn" id="editBtn">Применить правку</button>
+          </div>
+        </aside>
+
+        <div class="canvas">
+          <div class="canvas-head">
+            <div class="project-name" id="projName" contenteditable="false">—</div>
+            <div class="canvas-actions">
+              <button class="btn ghost" id="restyleBtn" title="Применить выбранный стиль к текущему проекту">Сменить стиль</button>
+              <button class="btn ghost" id="saveBtn">Сохранить</button>
+              <button class="btn" id="exportBtn">Экспорт PNG (zip)</button>
+            </div>
+          </div>
+          <div class="deck" id="deck"><div class="empty">Опиши карусель слева и нажми «Сгенерировать».<br>Каждый слайд можно редактировать вручную.</div></div>
+          <div class="caption-box" id="captionBox" hidden>
+            <label class="field"><span>Подпись</span><textarea id="capText" rows="2"></textarea></label>
+            <label class="field"><span>Хэштеги (через пробел)</span><input id="capTags"></label>
+            <label class="field"><span>Звук</span><input id="capSound"></label>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- STYLES -->
+    <section class="view" id="view-styles" hidden>
+      <div class="styles-layout">
+        <div class="style-gallery" id="styleGallery"></div>
+        <aside class="panel style-editor" id="styleEditor"></aside>
+      </div>
+    </section>
+
+    <!-- PROJECTS -->
+    <section class="view" id="view-projects" hidden>
+      <div class="projects-grid" id="projectsGrid"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view" id="view-settings" hidden>
+      <div class="panel settings">
+        <h2>Подключение модели</h2>
+        <p class="muted">Подключи свою локальную или любую другую LLM. Ничего не уходит наружу, кроме запросов к указанному серверу.</p>
+        <label class="field">
+          <span>Тип</span>
+          <select id="setProvider">
+            <option value="openai">OpenAI-совместимый (Ollama, LM Studio, llama.cpp, vLLM, OpenRouter, Groq, DeepSeek…)</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+          </select>
+        </label>
+        <div class="row">
+          <label class="field grow"><span>Base URL</span><input id="setBaseUrl" placeholder="http://localhost:11434/v1"></label>
+          <label class="field grow"><span>Модель</span><input id="setModel" placeholder="llama3.1"></label>
+        </div>
+        <label class="field"><span>API-ключ (если нужен)</span><input id="setApiKey" type="password" placeholder="оставь пустым для локальных"></label>
+        <div class="row">
+          <label class="field slim"><span>Температура</span><input id="setTemp" type="number" step="0.1" min="0" max="2"></label>
+          <label class="field checkbox"><input type="checkbox" id="setJson"><span>JSON-режим (отключи, если сервер не поддерживает)</span></label>
+        </div>
+        <div class="presets" id="presets"></div>
+        <hr>
+        <h2>Творческие настройки</h2>
+        <label class="field"><span>Твоя ниша / голос / правила (добавляется в каждый запрос)</span>
+          <textarea id="setInstr" rows="4" placeholder="например: пародии на looksmaxxing, лексика фанатов, финал всегда с абсурдным провалом"></textarea></label>
+        <div class="row">
+          <label class="field grow"><span>Язык контента</span><input id="setLang" placeholder="Russian / English"></label>
+          <label class="field grow"><span>Водяной знак (@ник)</span><input id="setHandle" placeholder="@твойник"></label>
+        </div>
+        <div class="settings-actions">
+          <button class="btn" id="testBtn">Проверить связь</button>
+          <button class="btn primary" id="saveSetBtn">Сохранить</button>
+          <span class="test-result" id="testResult"></span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" hidden></div>
+  <div class="overlay" id="overlay" hidden><div class="spinner"></div><div class="overlay-text" id="overlayText">Генерирую…</div></div>
+</div>
+
+<script src="/static/vendor/html-to-image.js"></script>
+<script src="/static/vendor/jszip.min.js"></script>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>

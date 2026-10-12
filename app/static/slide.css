@@ -1,0 +1,161 @@
+/* Base slide template. Styles only change the CSS variables below (+ optional scoped CSS). */
+.slide {
+  --bg: #e9e9e9; --text: #141414; --muted: #8a8a8a;
+  --accent: #e81c1c; --good: #18be3c; --info: #1e5adc;
+  --font-body: 'Inter', sans-serif; --font-title: var(--font-body);
+  --font-kicker: var(--font-body); --font-subtitle: var(--font-body);
+  --pad-x: 72px; --pad-top: 130px; --pad-bottom: 90px; --gap: 18px;
+  --kicker-size: 40px; --kicker-weight: 500; --kicker-color: var(--text); --kicker-shadow: none;
+  --kicker-case: none; --kicker-prefix: '';
+  --title-size: 88px; --title-weight: 800; --title-color: var(--accent); --title-case: uppercase;
+  --title-shadow: none; --title-spacing: 0; --title-lh: 1.02; --title-style: normal;
+  --title-gradient: none; --title-filter: none;
+  --cover-title-size: 120px; --cover-sub-size: 54px; --cover-align: center;
+  --sub-size: 62px; --sub-weight: 600; --sub-color: var(--text); --sub-style: normal; --sub-case: none;
+  --sub-shadow: none; --sub-font: var(--font-subtitle);
+  --pill-bg: rgba(0,0,0,.08); --pill-color: var(--text); --pill-border: none; --pill-size: 38px;
+  --pill-shadow: none; --pill-radius: 999px;
+  --body-size: 38px; --body-lh: 1.34; --body-weight: 400; --body-color: var(--text); --body-shadow: none;
+  --bullet: '•';
+  --card-bg: #fff; --card-pad: 10px; --card-radius: 4px; --card-border: none;
+  --card-shadow: 0 6px 18px rgba(0,0,0,.18);
+  --img-filter: none; --img-shadow: none;
+  --source-color: var(--muted); --source-size: 24px;
+  --watermark-color: rgba(255,255,255,.28); --watermark-size: 150px;
+  --grid-color: rgba(0,0,0,.08); --grid-size: 54px; --paper-opacity: .55; --noise-opacity: .12;
+  --scan-color: rgba(0,0,0,.25); --dot-color: rgba(0,0,0,.12); --glow-color: rgba(255,255,255,.75);
+  --vignette-color: rgba(0,0,0,.35); --star-color: rgba(255,255,255,.9); --line-color: rgba(0,80,200,.12);
+
+  position: relative; overflow: hidden; box-sizing: border-box;
+  width: var(--w, 1080px); height: var(--h, 1440px);
+  background: var(--bg); color: var(--text);
+  font-family: var(--font-body); font-size: var(--body-size);
+  -webkit-font-smoothing: antialiased;
+}
+.slide *, .slide *::before, .slide *::after { box-sizing: border-box; }
+
+/* ---------- textures ---------- */
+.slide .bg { position: absolute; inset: 0; pointer-events: none; }
+.slide .bg > div { position: absolute; inset: 0; }
+.slide .tx-grid {
+  background-image: linear-gradient(var(--grid-color) 2px, transparent 2px),
+                    linear-gradient(90deg, var(--grid-color) 2px, transparent 2px);
+  background-size: var(--grid-size) var(--grid-size);
+}
+.slide .tx-glow { background: radial-gradient(ellipse 70% 55% at 50% 50%, var(--glow-color), transparent 70%); }
+.slide .tx-vignette { background: radial-gradient(ellipse 85% 75% at 50% 45%, transparent 55%, var(--vignette-color)); }
+.slide .tx-paper {
+  opacity: var(--paper-opacity); mix-blend-mode: multiply;
+  background-size: cover;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='540' height='720'%3E%3Cfilter id='p' x='0' y='0'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.008 .011' numOctaves='5' seed='11'/%3E%3CfeDiffuseLighting lighting-color='%23fff' surfaceScale='2.2'%3E%3CfeDistantLight azimuth='60' elevation='58'/%3E%3C/feDiffuseLighting%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23p)'/%3E%3C/svg%3E");
+}
+.slide .tx-noise {
+  opacity: var(--noise-opacity);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+.slide .tx-scanlines { background: repeating-linear-gradient(0deg, var(--scan-color) 0 2px, transparent 2px 6px); }
+.slide .tx-halftone { background-image: radial-gradient(var(--dot-color) 2.2px, transparent 2.6px); background-size: 12px 12px; }
+.slide .tx-lines {
+  background-image: linear-gradient(transparent calc(var(--body-size) * var(--body-lh) - 2px), var(--line-color) 2px);
+  background-size: 100% calc(var(--body-size) * var(--body-lh));
+}
+.slide .tx-stars {
+  background-image:
+    radial-gradient(2px 2px at 12% 18%, var(--star-color), transparent),
+    radial-gradient(3px 3px at 82% 12%, var(--star-color), transparent),
+    radial-gradient(2px 2px at 64% 38%, var(--star-color), transparent),
+    radial-gradient(2px 2px at 28% 72%, var(--star-color), transparent),
+    radial-gradient(3px 3px at 90% 64%, var(--star-color), transparent),
+    radial-gradient(2px 2px at 8% 90%, var(--star-color), transparent),
+    radial-gradient(2px 2px at 46% 86%, var(--star-color), transparent);
+}
+
+/* ---------- content ---------- */
+.slide .content {
+  position: absolute; inset: var(--pad-top) var(--pad-x) var(--pad-bottom);
+  display: flex; flex-direction: column; gap: var(--gap);
+}
+.slide .kicker {
+  font-family: var(--font-kicker); font-size: var(--kicker-size); font-weight: var(--kicker-weight);
+  color: var(--kicker-color); text-shadow: var(--kicker-shadow); text-transform: var(--kicker-case);
+  line-height: 1.1; margin-bottom: -10px;
+}
+.slide .kicker::before { content: var(--kicker-prefix); }
+.slide .title {
+  font-family: var(--font-title); font-size: var(--title-size); font-weight: var(--title-weight);
+  font-style: var(--title-style); color: var(--title-color); text-transform: var(--title-case);
+  letter-spacing: var(--title-spacing); line-height: var(--title-lh); text-shadow: var(--title-shadow);
+  background: var(--title-gradient); -webkit-background-clip: text; background-clip: text;
+  filter: var(--title-filter); margin: 0; overflow-wrap: anywhere;
+}
+.slide .pill {
+  align-self: flex-start; display: inline-flex; align-items: center; gap: .45em;
+  padding: .28em .9em; border-radius: var(--pill-radius); font-size: var(--pill-size); font-weight: 600;
+  background: var(--pill-bg); color: var(--pill-color); border: var(--pill-border); box-shadow: var(--pill-shadow);
+}
+.slide .pill::before { content: '•'; opacity: .9; }
+.slide .subtitle {
+  font-family: var(--sub-font); font-size: var(--sub-size); font-weight: var(--sub-weight);
+  font-style: var(--sub-style); color: var(--sub-color); text-transform: var(--sub-case);
+  text-shadow: var(--sub-shadow); line-height: 1.12; margin: 6px 0 0;
+}
+.slide .body, .slide li, .slide .item-text {
+  font-size: var(--body-size); line-height: var(--body-lh); font-weight: var(--body-weight);
+  color: var(--body-color); text-shadow: var(--body-shadow);
+}
+.slide .body { margin: 0; white-space: pre-line; }
+.slide ul, .slide ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.slide ul.bullets li { padding-left: 1.15em; position: relative; }
+.slide ul.bullets li::before { content: var(--bullet); position: absolute; left: .1em; }
+.slide ol.steps { counter-reset: step; }
+.slide ol.steps li { padding-left: 1.5em; position: relative; counter-increment: step; }
+.slide ol.steps li::before { content: counter(step) '.'; position: absolute; left: 0; }
+.slide .hl-r { color: var(--accent); }
+.slide .hl-g { color: var(--good); }
+.slide .hl-b { color: var(--info); }
+.slide b, .slide strong { font-weight: 700; }
+.slide .source { font-size: var(--source-size); color: var(--source-color); margin-top: auto; }
+
+/* images */
+.slide .media { flex: 1 1 0; min-height: 0; display: flex; align-items: flex-end; justify-content: center; gap: 28px; }
+.slide .img { position: relative; flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; justify-content: center; }
+.slide .img img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; filter: var(--img-filter) var(--img-shadow); }
+.slide .img.card img { background: var(--card-bg); padding: var(--card-pad); border-radius: var(--card-radius); border: var(--card-border); box-shadow: var(--card-shadow); filter: var(--img-filter); }
+.slide .img .label { position: absolute; top: -1.4em; left: 0; right: 0; text-align: center; font-weight: 600; font-size: calc(var(--body-size) * .9); }
+.slide .img .mark { position: absolute; width: 58%; aspect-ratio: 1; left: 21%; bottom: 18%; pointer-events: none; }
+
+/* items layout */
+.slide .items { display: flex; flex-direction: column; gap: 26px; flex: 1 1 0; min-height: 0; justify-content: center; }
+.slide .item { display: flex; gap: 32px; align-items: center; }
+.slide .item .frame { width: 30%; aspect-ratio: 4/3; flex: none; display: flex; align-items: center; justify-content: center;
+  background: var(--card-bg); border-radius: var(--card-radius); border: var(--card-border); box-shadow: var(--card-shadow); padding: var(--card-pad); }
+.slide .item .frame img { max-width: 100%; max-height: 100%; object-fit: contain; filter: var(--img-filter); }
+.slide .item-text { padding-top: 6px; flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
+.slide .item-text::before { content: var(--bullet) ' '; }
+
+/* cover */
+.slide.layout-cover .content { align-items: var(--cover-align); text-align: var(--cover-align); justify-content: flex-start; }
+.slide.layout-cover .title { font-size: var(--cover-title-size); }
+.slide.layout-cover .subtitle { font-size: var(--cover-sub-size); }
+.slide.layout-cover .kicker { margin-bottom: 0; }
+.slide.layout-cover .media { width: 100%; align-items: flex-end; }
+.slide.layout-cover .media .img:not(:first-child) { flex: .55 1 0; height: 55%; align-self: center; }
+.slide.layout-cover .media .img:first-child { order: 2; flex: 1.4 1 0; }
+.slide.layout-cover .media .img:nth-child(2) { order: 1; }
+.slide.layout-cover .media .img:nth-child(3) { order: 3; }
+
+/* compare */
+.slide .compare { display: flex; gap: 28px; flex: 1 1 0; min-height: 0; padding-top: 50px; }
+.slide .compare .img { height: 100%; }
+
+/* statement */
+.slide.layout-statement .content { justify-content: center; }
+.slide.layout-statement .subtitle { font-size: calc(var(--sub-size) * 1.25); }
+.slide.layout-statement .media { flex: 0 0 34%; }
+
+/* overlays */
+.slide .watermark {
+  position: absolute; left: 0; right: 0; top: 58%; text-align: center; pointer-events: none;
+  font: 800 var(--watermark-size)/1 var(--font-body); color: var(--watermark-color); letter-spacing: -.02em;
+}
+.slide .pageno { position: absolute; right: var(--pad-x); bottom: 36px; font-size: 24px; color: var(--muted); }

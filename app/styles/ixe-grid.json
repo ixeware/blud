@@ -1,0 +1,26 @@
+{
+  "id": "ixe-grid",
+  "name": "ixe Grid",
+  "description": "Светлая миллиметровка, красный заголовок — классические слайды-гайды ixepill.",
+  "size": [1080, 1440],
+  "texture": ["grid", "glow", "paper"],
+  "vars": {
+    "--bg": "#e9e9e9",
+    "--text": "#161616",
+    "--muted": "#8c8c8c",
+    "--accent": "#e81c1c",
+    "--good": "#1aba39",
+    "--info": "#1e5adc",
+    "--font-title": "'Inter', sans-serif",
+    "--title-weight": "800",
+    "--title-size": "92px",
+    "--kicker-size": "40px",
+    "--sub-size": "62px",
+    "--sub-weight": "700",
+    "--grid-color": "rgba(0,0,0,.07)",
+    "--glow-color": "rgba(255,255,255,.85)",
+    "--paper-opacity": ".5",
+    "--card-shadow": "0 8px 22px rgba(0,0,0,.16)"
+  },
+  "css": ".title{overflow-wrap:anywhere}"
+}
