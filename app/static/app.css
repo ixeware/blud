@@ -7,6 +7,7 @@
   --shadow: 0 10px 40px rgba(0,0,0,.4);
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; }
 body {
   background: radial-gradient(1200px 700px at 80% -10%, #171a22 0%, var(--bg0) 55%) fixed;
