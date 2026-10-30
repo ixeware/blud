@@ -1,0 +1,17 @@
+{
+  "name": "front-gambit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Front Gambit - military FPS chess for Android",
+  "scripts": {
+    "bundle": "esbuild web/src/main.js --bundle --minify --format=iife --target=es2019 --outfile=web/dist/game.js",
+    "build": "bash build.sh"
+  },
+  "dependencies": {
+    "peerjs": "1.5.4",
+    "three": "0.170.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.0"
+  }
+}

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Фронтовой Гамбит</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="gl"></canvas>
+
+<!-- MAIN MENU -->
+<div id="menu" class="screen">
+  <div class="menu-box">
+    <div class="logo">
+      <div class="logo-top">♜ ФРОНТОВОЙ ГАМБИТ ♞</div>
+      <div class="logo-sub">FPS-шахматы войны</div>
+    </div>
+    <div class="menu-cols">
+      <div class="menu-buttons">
+        <button class="btn big" data-act="ai">⚔️ Против ИИ</button>
+        <button class="btn big" data-act="hot">👥 Вдвоём на одном устройстве</button>
+        <button class="btn big" data-act="host">🌐 Онлайн: создать комнату</button>
+        <button class="btn big" data-act="join">🔑 Онлайн: войти по коду</button>
+        <button class="btn" data-act="help">📖 Как играть</button>
+      </div>
+      <div class="settings">
+        <div class="set-title">Настройки</div>
+        <label>Сложность ИИ
+          <select id="setDiff">
+            <option value="0">Новобранец</option>
+            <option value="1" selected>Солдат</option>
+            <option value="2">Ветеран</option>
+          </select>
+        </label>
+        <label>Бои при атаке
+          <select id="setDuel">
+            <option value="manual" selected>Управлять вручную (FPS)</option>
+            <option value="auto">Автобой (быстро)</option>
+          </select>
+        </label>
+        <label>Графика
+          <select id="setGfx">
+            <option value="high">Высокая (тени)</option>
+            <option value="low">Быстрая</option>
+          </select>
+        </label>
+        <label class="row"><input type="checkbox" id="setSound" checked> Звук</label>
+      </div>
+    </div>
+    <div class="ver">v1.0 · мультиплеер через бесплатный сервер PeerJS (WebRTC)</div>
+  </div>
+</div>
+
+<!-- LOBBY -->
+<div id="lobby" class="screen hidden">
+  <div class="panel center">
+    <h2 id="lobbyTitle">Онлайн</h2>
+    <div id="hostBox">
+      <p>Код комнаты — отправьте его другу:</p>
+      <div id="roomCode" class="code">.....</div>
+      <p id="lobbyStatus" class="muted">Подключение к серверу…</p>
+    </div>
+    <div id="joinBox" class="hidden">
+      <p>Введите код комнаты:</p>
+      <input id="joinCode" maxlength="5" autocomplete="off" autocapitalize="characters" placeholder="ABCDE">
+      <button class="btn" id="joinGo">Подключиться</button>
+      <p id="joinStatus" class="muted"></p>
+    </div>
+    <button class="btn ghost" id="lobbyBack">Назад</button>
+  </div>
+</div>
+
+<!-- HELP -->
+<div id="help" class="screen hidden">
+  <div class="panel scroll">
+    <h2>Как играть</h2>
+    <p><b>Цель:</b> уничтожить вражеского <b>Генерала ♚</b> (штаб). Шаха и мата нет — генерала нужно победить в бою, дроном, артиллерией или авиаударом.</p>
+    <p><b>Ход:</b> 1 действие за ход — переместить юнита, применить способность, запустить дрон или авиаудар. Покупки (подкрепления, заводы, ж/д, мины, диверсии, РЭБ) не тратят действие.</p>
+    <p><b>Атака = FPS-бой!</b> Когда фигура бьёт вражескую, начинается схватка на арене с видом сверху. Левый стик — движение, правый — прицел и огонь, кнопка — спецспособность. Соседние союзные фигуры приходят на помощь бойцами. Окопавшиеся получают меньше урона. Таймер 75 с — если никто не погиб, атака захлёбывается.</p>
+    <p><b>Юниты:</b></p>
+    <ul>
+      <li>♟ <b>Пехотинец</b> — автомат, граната. Окопаться: −30% урона.</li>
+      <li>♞ <b>Спецназ</b> — ходит конём, ПП, рывок. Рейд: оглушить врага.</li>
+      <li>♝ <b>Снайпер</b> — диагонали, винтовка, артналёт. Артудар на 3 клетки.</li>
+      <li>♜ <b>Танк</b> — прямые, броня, пушка давит укрытия. Огонь с места на 4 клетки.</li>
+      <li>♛ <b>Вертолёт</b> — как ферзь, летает над стенами, миниган и НУРСы.</li>
+      <li>♚ <b>Генерал</b> — штаб. Мобилизация пехоты, в бою вызывает охрану.</li>
+    </ul>
+    <p><b>Линия фронта:</b> клетки ближе к вашим войскам — ваша территория (жёлтая линия — фронт). Доход = 15 + 20 за завод + ½ территории.</p>
+    <p><b>Логистика:</b> юниты, отрезанные от тыла (⛔), не лечатся и бьют слабее. Железная дорога продлевает снабжение и позволяет перебросить юнита по путям за один ход.</p>
+    <p><b>FPV-дрон:</b> управляйте камикадзе-дроном от первого лица — врежьтесь во врага! Танки получают 120 урона. РЭБ противника создаёт помехи.</p>
+    <p><b>Блицкриг:</b> +2 действия за ход — прорыв обороны. <b>Диверсия:</b> подрыв заводов и ж/д.</p>
+    <p><b>Пешка на последней линии</b> получает вертолёт.</p>
+    <button class="btn" data-close>Понятно</button>
+  </div>
+</div>
+
+<!-- BOARD HUD -->
+<div id="hud" class="hidden">
+  <div class="topbar">
+    <div class="tb-left">
+      <div id="turnBadge" class="badge">Ход 1 · Синие</div>
+      <div id="actBadge" class="badge small">Действия: 1</div>
+    </div>
+    <div class="tb-mid">
+      <div class="terr"><div id="terrW"></div><div id="terrB"></div></div>
+      <div class="terr-label"><span id="terrWl">50%</span> линия фронта <span id="terrBl">50%</span></div>
+    </div>
+    <div class="tb-right">
+      <div id="money" class="badge money">💰 100 <span id="income">+47</span></div>
+      <div id="factBadge" class="badge small">🏭 1</div>
+      <div id="ping" class="badge small hidden">📶 —</div>
+      <button class="btn icon" id="menuBtn">☰</button>
+    </div>
+  </div>
+  <div id="log" class="log"></div>
+  <div class="right-col">
+    <button class="btn shop-btn" id="shopBtn">🛒 Штаб<br><small>снабжения</small></button>
+    <button class="btn end-btn" id="endBtn">Конец хода ⏭</button>
+  </div>
+  <div id="info" class="info hidden">
+    <div class="info-head"><span id="infoGlyph" class="glyph">♟</span><div><div id="infoName">Пехотинец</div><div id="infoHp" class="muted">100/100</div></div></div>
+    <div id="infoDesc" class="muted small"></div>
+    <div class="info-btns">
+      <button class="btn" id="abilityBtn">Способность</button>
+      <button class="btn ghost" id="infoClose">✕</button>
+    </div>
+  </div>
+  <div id="targetBar" class="target-bar hidden"><span id="targetText">Выберите клетку</span><button class="btn ghost" id="targetCancel">Отмена</button></div>
+  <div id="waitBar" class="wait-bar hidden">Ход противника…</div>
+</div>
+
+<!-- SHOP -->
+<div id="shop" class="screen dim hidden">
+  <div class="panel wide">
+    <div class="shop-head"><h2>Штаб снабжения</h2><div id="shopMoney" class="badge money">💰 0</div><button class="btn ghost icon" data-close>✕</button></div>
+    <div id="shopGrid" class="shop-grid"></div>
+  </div>
+</div>
+
+<!-- SABOTAGE CHOICE -->
+<div id="sabo" class="screen dim hidden">
+  <div class="panel center">
+    <h2>🧨 Цель диверсии</h2>
+    <button class="btn big" data-sabo="factory">🏭 Взорвать завод (55%)</button>
+    <button class="btn big" data-sabo="rail">🛤️ Подорвать железные дороги</button>
+    <button class="btn ghost" data-close>Отмена</button>
+  </div>
+</div>
+
+<!-- IN-GAME MENU -->
+<div id="pause" class="screen dim hidden">
+  <div class="panel center">
+    <h2>Пауза</h2>
+    <button class="btn big" data-close>Продолжить</button>
+    <button class="btn" id="helpBtn2">📖 Как играть</button>
+    <button class="btn" id="toggleSnd">🔊 Звук</button>
+    <button class="btn danger" id="quitBtn">Выйти в меню</button>
+  </div>
+</div>
+
+<!-- DUEL HUD -->
+<div id="duelHud" class="hidden">
+  <div class="duel-top">
+    <div class="fighter left"><div id="dNameA" class="fname">Атака</div><div class="hpbar"><div id="dHpA"></div></div></div>
+    <div id="dTimer" class="timer">75</div>
+    <div class="fighter right"><div id="dNameD" class="fname">Оборона</div><div class="hpbar"><div id="dHpD"></div></div></div>
+  </div>
+  <div id="spectate" class="spectate hidden">Наблюдение за боем…</div>
+</div>
+
+<!-- DRONE HUD -->
+<div id="droneHud" class="hidden">
+  <div class="fpv-noise" id="fpvNoise"></div>
+  <div class="fpv-frame">
+    <div class="fpv-cross">+</div>
+    <div class="fpv-tl">REC ● <span id="fpvSide">FPV</span></div>
+    <div class="fpv-tr">🔋 <span id="fpvBat">100</span>%</div>
+    <div class="fpv-bl">ALT <span id="fpvAlt">5.0</span> м</div>
+    <div class="fpv-br" id="fpvSig">СИГНАЛ ▮▮▮▮</div>
+    <div class="fpv-help" id="fpvHelp">Стик: поворот и высота · ⚡ ускорение · Врежьтесь во врага!</div>
+  </div>
+</div>
+
+<!-- STICKS (shared by duel and drone) -->
+<div id="sticks" class="hidden">
+  <div class="stick left" id="stickL"><div class="knob"></div><div class="stick-label">ДВИЖЕНИЕ</div></div>
+  <div class="stick right" id="stickR"><div class="knob"></div><div class="stick-label">ОГОНЬ</div></div>
+  <button class="ability" id="abBtn"><span id="abName">Граната</span><div id="abCd" class="cd"></div></button>
+</div>
+
+<div id="banner" class="banner hidden"><div id="bannerText"></div><div id="bannerSub"></div></div>
+<div id="toast" class="toast hidden"></div>
+
+<!-- GAME OVER -->
+<div id="over" class="screen dim hidden">
+  <div class="panel center">
+    <h1 id="overTitle">ПОБЕДА</h1>
+    <div id="overStats" class="stats"></div>
+    <button class="btn big" id="overMenu">В главное меню</button>
+  </div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
