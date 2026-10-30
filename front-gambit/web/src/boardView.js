@@ -1,13 +1,22 @@
 // 3D strategic board view with environment, effects and cinematic camera shots.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { TILE, sqToWorld, worldToSq } from './rng.js';
-import { unitModel, makeTree, makeFactory, makeDrone, makeKeypoint, TEAM_COLORS, mat, tex, bake } from './models.js';
+import { unitModel, makeDrone, makeKeypoint, makeBuilding, setNightWindows, TEAM_COLORS, mat, tex, bake, flatten, makeForest } from './models.js';
+import { makeSky, applyLights, makeClouds, makeTerrain, scatterGrass, scatterRocks, makeWater, updateWind, updateWater, fbm } from './world.js';
+import { plotPos, PLOTS, BUILDINGS } from './city.js';
 import { FX } from './fx.js';
 import { territory, supplyMap, rc, unitDef } from './rules.js';
 import { hasPassive } from './core.js';
-import { FACTORY_POS } from './drone.js';
 import { A, img } from './assets.js';
 
+const CINE_SLOW = 1.7;
+// time of day: city fights are overcast, field battles happen by day or at sunset, blackouts are at night
+export function lightPreset(state) {
+  if (state.effects && state.effects.blackout > 0) return 'night';
+  if (state.map === 'city') return 'overcast';
+  return (state.seed || 0) % 3 === 0 ? 'sunset' : 'day';
+}
 const HL_COLORS = { move: 0x4cff6a, capture: 0xff3b30, rail: 0x3fb6ff, metro: 0xd64bff, target: 0xffc93c, select: 0xffffff, last: 0xffe9a0 };
 
 export class BoardView {
@@ -29,6 +38,8 @@ export class BoardView {
     this.scorches = [];
     this.map = null;
     this.onCine = () => {};
+    this.cityView = null;
+    this.occluders = [];
     this.build();
   }
 
@@ -77,23 +88,30 @@ export class BoardView {
       s.add(m);
       this.hlMeshes.push(m);
     }
-    for (let c = 0; c < 8; c++) for (const [r, zOff] of [[0, 1], [7, -1]]) {
-      const w = sqToWorld(r * 8 + c);
-      const sp = this.labelSprite('abcdefgh'[c]);
-      sp.position.set(w.x, 0.3, w.z + zOff * (TILE / 2 + 0.5));
-      s.add(sp);
+    this.labelPlane = new THREE.Mesh(new THREE.PlaneGeometry(42, 42), new THREE.MeshBasicMaterial({ transparent: true, depthWrite: false }));
+    this.labelPlane.rotation.x = -Math.PI / 2;
+    this.labelPlane.position.y = 0.22;
+    s.add(this.labelPlane);
+    this.labelTex = { w: this.makeLabelTexture('w'), b: this.makeLabelTexture('b') };
+    this.labelPlane.material.map = this.labelTex.w;
+    this.cityGroup = new THREE.Group();
+    s.add(this.cityGroup);
+    this.cityMeshes = { w: new Array(PLOTS).fill(null), b: new Array(PLOTS).fill(null) };
+    this.plotPads = [];
+    const padGeo = new THREE.PlaneGeometry(8.4, 5);
+    for (const side of ['w', 'b']) for (let i = 0; i < PLOTS; i++) {
+      const p = plotPos(side, i);
+      const pad = new THREE.Mesh(padGeo, new THREE.MeshBasicMaterial({ color: 0xfee761, transparent: true, opacity: 0.0, depthWrite: false }));
+      pad.rotation.x = -Math.PI / 2;
+      pad.position.set(p.x, -0.3, p.z);
+      pad.userData = { side, plot: i };
+      s.add(pad);
+      this.plotPads.push(pad);
+      const frame = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(8.2, 0.02, 4.8)), new THREE.LineBasicMaterial({ color: 0x8a8a7a, transparent: true, opacity: 0.6 }));
+      frame.position.set(p.x, -0.32, p.z);
+      s.add(frame);
+      pad.userData.frame = frame;
     }
-    for (let r = 0; r < 8; r++) {
-      const w = sqToWorld(r * 8);
-      for (const x of [w.x - TILE / 2 - 0.5, -w.x + TILE / 2 + 0.5]) {
-        const sp = this.labelSprite(String(r + 1));
-        sp.position.set(x, 0.3, w.z);
-        s.add(sp);
-      }
-    }
-    this.factoryGroups = { w: new THREE.Group(), b: new THREE.Group() };
-    s.add(this.factoryGroups.w, this.factoryGroups.b);
-    this.factoryMeshes = { w: [], b: [] };
     for (const name of ['railGroup', 'frontGroup', 'mineGroup', 'terrainGroup', 'kpGroup', 'sqfxGroup', 'lootGroup']) {
       this[name] = new THREE.Group();
       s.add(this[name]);
@@ -101,105 +119,159 @@ export class BoardView {
     this.snow = null;
   }
 
-  // environment differs per map
-  buildEnvironment(map) {
-    if (this.map === map) return;
+  // environment differs per map and time of day
+  buildEnvironment(map, preset) {
+    const key = map + preset;
+    if (this.envKey === key) return;
+    this.envKey = key;
     this.map = map;
+    this.preset = preset;
     const g = this.envGroup;
     g.clear();
+    const stat = new THREE.Group(); // static props, merged into a few draw calls at the end
     const city = map === 'city';
-    this.scene.background = new THREE.Color(city ? 0x8fa3b3 : 0x9cc8e0);
-    this.scene.fog = new THREE.Fog(this.scene.background, 75, 150);
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(260, 260), mat(city ? 0xb0b0b0 : 0x86a066, { map: tex(city ? 'tex_asphalt' : 'tex_grass', 40) }));
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = -0.4;
-    ground.receiveShadow = true;
+    applyLights(this.scene, this.hemi, this.sun, preset);
+    this.baseI = { sun: this.sun.intensity, hemi: this.hemi.intensity };
+    g.add(makeSky(preset));
+    this.clouds = makeClouds(14, 160, 48, preset === 'night' || preset === 'overcast');
+    g.add(this.clouds);
+    const inRear = (x, z) => Math.abs(x) < 29 && Math.abs(z) > 16 && Math.abs(z) < 32;
+    const flat = (x, z) => {
+      if (!city && Math.abs(x - 34) < 7) return 0; // river bed
+      const d = Math.max(Math.abs(x) / 34, Math.abs(z) / 36);
+      return Math.max(0, Math.min(1, (d - 1) * 1.6));
+    };
+    const hill = city ? 0 : 9;
+    const ground = makeTerrain({ base: city ? 0x9a9a9a : 0x86a066, texName: city ? 'tex_asphalt' : 'tex_grass', repeat: city ? 30 : 46, hill, flatMask: flat });
     g.add(ground);
+    const heightAt = (x, z) => -0.4 + flat(x, z) * (fbm(x * 0.03, z * 0.03) * hill + Math.max(0, (Math.hypot(x, z) - 90) * 0.12));
     this.tileMat.map = tex(city ? 'tex_cobble' : 'tex_dirt', 1);
     this.tileMat.needsUpdate = true;
-    // rear zones with the main supply line
     for (const dir of [1, -1]) {
-      const zone = new THREE.Mesh(new THREE.PlaneGeometry(54, 12), mat(0xffffff, { map: tex('tex_concrete', 6) }));
+      const zone = new THREE.Mesh(new THREE.PlaneGeometry(56, 14), mat(0xb8b4a8, { map: tex('tex_concrete', 6) }));
       zone.rotation.x = -Math.PI / 2;
-      zone.position.set(0, -0.38, dir * 23.5);
+      zone.position.set(0, -0.37, dir * 24.4);
       zone.receiveShadow = true;
-      g.add(zone);
-      this.trackLine(-26, dir * 18.6, 26, dir * 18.6, -0.35, g);
-      // parked wagons
+      stat.add(zone);
+      this.trackLine(-28, dir * 18.6, 28, dir * 18.6, -0.35, g);
       for (let k = 0; k < 3; k++) {
-        const wag = new THREE.Mesh(new THREE.BoxGeometry(3, 1.4, 1.3), mat(k % 2 ? 0x6b4a3a : 0x55603d));
-        wag.position.set(16 + k * 3.3, 0.4, dir * 18.6);
+        const wag = new THREE.Mesh(new THREE.BoxGeometry(3, 1.4, 1.3), mat(k % 2 ? 0x6b4a3a : 0x55603d, { map: tex('tex_metal', 1) }));
+        wag.position.set(18 + k * 3.3, 0.4, dir * 18.6);
         wag.castShadow = true;
-        g.add(wag);
+        stat.add(wag);
       }
+      // fence around the rear city
+      const fence = new THREE.Mesh(new THREE.BoxGeometry(56, 0.9, 0.12), mat(0x6a6a5a, { map: tex('tex_metal', 4) }));
+      fence.position.set(0, 0.05, dir * 31.4);
+      stat.add(fence);
     }
-    // trenches, hedgehogs and wire along the board sides
     for (const sx of [-1, 1]) {
       for (let z = -12; z <= 12; z += 3) {
         const hh = new THREE.Group();
         for (let k = 0; k < 3; k++) { const b = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.12, 0.12), mat(0x3a3a3a)); b.rotation.set(k * 1.05, k * 0.8, 0.6); hh.add(b); }
         hh.position.set(sx * 19, 0.2, z + (Math.random() - 0.5));
-        g.add(bake(hh));
+        stat.add(hh);
       }
       const wire = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.03, 4, 10), mat(0x777777));
-      for (let z = -14; z <= 14; z += 0.6) { const w = wire.clone(); w.position.set(sx * 20.5, 0.25, z); w.rotation.y = Math.PI / 2; g.add(w); }
+      for (let z = -14; z <= 14; z += 0.6) { const w = wire.clone(); w.position.set(sx * 20.5, 0.25, z); w.rotation.y = Math.PI / 2; stat.add(w); }
     }
+    const avoid = (x, z) => (Math.abs(x) < 21 && Math.abs(z) < 18) || inRear(x, z) || (!city && x > 29 && x < 39);
     if (city) {
-      // apartment blocks and streets around the board
-      for (let i = 0; i < 46; i++) {
-        const a = Math.random() * Math.PI * 2, r = 30 + Math.random() * 40;
+      for (let i = 0; i < 60; i++) {
+        const a = Math.random() * Math.PI * 2, r = 34 + Math.random() * 50;
         const x = Math.cos(a) * r, z = Math.sin(a) * r;
-        if (Math.abs(z) < 30 && Math.abs(x) < 28) continue;
-        const h = 4 + Math.random() * 12;
-        const b = new THREE.Mesh(new THREE.BoxGeometry(5 + Math.random() * 4, h, 5 + Math.random() * 4), mat([0xc8c0b4, 0xa8b0b8, 0xd8c8a8][i % 3], { map: tex(i % 2 ? 'tex_concrete' : 'tex_brick', 2) }));
+        if (Math.abs(z) < 34 && Math.abs(x) < 30) continue;
+        const h = 5 + Math.random() * 16;
+        const w = 5 + Math.random() * 4, d = 5 + Math.random() * 4;
+        const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat([0xc8c0b4, 0xa8b0b8, 0xd8c8a8][i % 3], { map: tex(i % 2 ? 'tex_concrete' : 'tex_brick', 2) }));
         b.position.set(x, h / 2 - 0.4, z);
         b.castShadow = true;
         b.receiveShadow = true;
-        g.add(b);
-      }
-      for (const z of [-30, 30]) {
-        for (let x = -24; x <= 24; x += 8) {
-          const lamp = new THREE.Group();
-          const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 4, 6), mat(0x333333)); pole.position.y = 1.6; lamp.add(pole);
-          const head = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.15, 0.3), mat(0xffeeaa, { emissive: 0x665522 })); head.position.set(0.3, 3.6, 0); lamp.add(head);
-          lamp.position.set(x, -0.4, z);
-          g.add(lamp);
+        stat.add(b);
+        // lit windows on the facade facing the board
+        for (let f = 1; f < h - 1; f += 1.6) {
+          const win = new THREE.Mesh(new THREE.PlaneGeometry(w * 0.8, 0.35), mat(0xffd27a, { emissive: preset === 'night' ? 0xffa030 : 0x3a2a10 }));
+          const toC = Math.atan2(-x, -z);
+          win.position.set(x + Math.sin(toC) * (d / 2 + 0.02), f, z + Math.cos(toC) * (d / 2 + 0.02));
+          win.rotation.y = toC;
+          if (Math.random() < 0.7) stat.add(win);
         }
       }
-    } else {
-      for (let i = 0; i < 110; i++) {
-        const a = Math.random() * Math.PI * 2, r = 26 + Math.random() * 45;
-        const x = Math.cos(a) * r, z = Math.sin(a) * r;
-        if (Math.abs(z) > 16 && Math.abs(z) < 31 && Math.abs(x) < 28) continue;
-        const t = makeTree(0.9 + Math.random() * 1.3);
-        t.position.set(x, -0.4, z);
-        g.add(t);
+      for (const z of [-33, 33]) for (let x = -24; x <= 24; x += 8) {
+        const lamp = new THREE.Group();
+        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 4, 6), mat(0x333333)); pole.position.y = 1.6; lamp.add(pole);
+        const head = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.15, 0.3), new THREE.MeshBasicMaterial({ color: new THREE.Color(2.2, 2.0, 1.4) })); head.position.set(0.3, 3.6, 0); lamp.add(head);
+        lamp.position.set(x, -0.4, z);
+        stat.add(lamp);
       }
-      // river with a bridge on the east flank
-      const river = new THREE.Mesh(new THREE.PlaneGeometry(7, 260), new THREE.MeshLambertMaterial({ color: 0x3f7fb3, transparent: true, opacity: 0.85 }));
-      river.rotation.x = -Math.PI / 2;
-      river.position.set(34, -0.35, 0);
+      g.add(scatterRocks({ count: 40, area: 100, avoid, heightAt: () => -0.4, color: 0x7a7670 }));
+    } else {
+      const green = [], dry = [];
+      for (let i = 0; i < 170; i++) {
+        const a = Math.random() * Math.PI * 2, r = 26 + Math.random() * 75;
+        const x = Math.cos(a) * r, z = Math.sin(a) * r;
+        if (avoid(x, z) || (x > 27 && x < 41)) continue;
+        (preset === 'sunset' && Math.random() < 0.3 ? dry : green).push({ x, y: heightAt(x, z) - 0.1, z, s: 0.9 + Math.random() * 1.4 });
+      }
+      g.add(makeForest(green, 'green'));
+      if (dry.length) g.add(makeForest(dry, 'dry'));
+      const river = makeWater(8, 300);
+      river.position.set(34, -0.32, 0);
       g.add(river);
-      const bridge = new THREE.Mesh(new THREE.BoxGeometry(9, 0.4, 4), mat(0x7a6a55, { map: tex('tex_wood', 2) }));
+      const bridge = new THREE.Mesh(new THREE.BoxGeometry(10, 0.4, 4), mat(0x7a6a55, { map: tex('tex_wood', 2) }));
       bridge.position.set(34, 0, 0);
-      g.add(bridge);
-      // farmhouses and hay
-      for (const [x, z] of [[-34, 8], [-38, -14], [42, 22]]) {
+      bridge.castShadow = true;
+      stat.add(bridge);
+      for (const x of [29.5, 38.5]) for (const z of [-1.8, 1.8]) {
+        const post = new THREE.Mesh(new THREE.BoxGeometry(0.3, 1.2, 0.3), mat(0x5a4a3a)); post.position.set(x, 0.5, z); stat.add(post);
+      }
+      for (const [x, z] of [[-36, 8], [-40, -14], [46, 22], [48, -26]]) {
         const h = new THREE.Group();
         const w = new THREE.Mesh(new THREE.BoxGeometry(5, 3, 4), mat(0xd8c8a8, { map: tex('tex_brick', 1) })); w.position.y = 1.1; h.add(w);
         const roof = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 3.4, 2, 4), mat(0x8a3b2a, { map: tex('tex_roof', 1) })); roof.position.y = 3.6; roof.rotation.y = Math.PI / 4; h.add(roof);
-        h.position.set(x, -0.4, z);
+        const win = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.7), mat(0xffd27a, { emissive: preset === 'night' ? 0xffa030 : 0x3a2a10 })); win.position.set(0, 1.4, 2.01); h.add(win);
+        h.position.set(x, heightAt(x, z), z);
         h.traverse((o) => { if (o.isMesh) o.castShadow = true; });
-        g.add(h);
+        stat.add(h);
       }
-      for (let i = 0; i < 12; i++) {
-        const hay = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 1, 10), mat(0xd9b45a));
+      for (let i = 0; i < 14; i++) {
+        const hay = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.7, 1, 12), mat(0xd9b45a));
         hay.rotation.z = Math.PI / 2;
-        hay.position.set(-30 - Math.random() * 15, 0.25, -30 + Math.random() * 60);
+        const x = -30 - Math.random() * 16, z = -30 + Math.random() * 60;
+        hay.position.set(x, heightAt(x, z) + 0.6, z);
         hay.castShadow = true;
-        g.add(hay);
+        stat.add(hay);
       }
+      g.add(scatterGrass({ count: this.lowGfx ? 900 : 2600, area: 95, avoid, heightAt }));
+      g.add(scatterRocks({ count: 70, area: 100, avoid, heightAt }));
     }
+    flatten(stat);
+    g.add(stat);
+    setNightWindows(preset === 'night');
+  }
+
+  // board coordinates painted on one texture (flipped for the red player's camera)
+  makeLabelTexture(side) {
+    const N = 1024, c = document.createElement('canvas');
+    c.width = c.height = N;
+    const g = c.getContext('2d');
+    g.fillStyle = 'rgba(255,255,255,0.92)';
+    g.font = '34px "Press Start 2P", monospace';
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    const px = (x) => (x / 42 + 0.5) * N;
+    const put = (txt, x, z) => {
+      g.save();
+      g.translate(px(x), px(z));
+      if (side === 'b') g.rotate(Math.PI);
+      g.fillText(txt, 0, 0);
+      g.restore();
+    };
+    const E = 17.75;
+    for (let c2 = 0; c2 < 8; c2++) { const x = (c2 - 3.5) * TILE; put('abcdefgh'[c2], x, E); put('abcdefgh'[c2], x, -E); }
+    for (let r = 0; r < 8; r++) { const z = (3.5 - r) * TILE; put(String(r + 1), -E, z); put(String(r + 1), E, z); }
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
   }
 
   labelSprite(txt) {
@@ -241,6 +313,7 @@ export class BoardView {
 
   setViewSide(side) {
     this.viewSide = side;
+    if (this.labelPlane) { this.labelPlane.material.map = this.labelTex[side === 'b' ? 'b' : 'w']; this.labelPlane.material.needsUpdate = true; }
     this.camAz = side === 'w' ? 0 : Math.PI;
     this.camTarget.set(0, 0, side === 'w' ? 1 : -1);
   }
@@ -254,13 +327,27 @@ export class BoardView {
   // ---------- cinematic shots ----------
   // shot: {pos:Vector3, look:Vector3, dur, fov?}
   cinematic(shots) {
-    if (!this.cineEnabled) return;
+    if (!this.cineEnabled || this.cityView) return;
     const now = this.time;
     if (this.shots.length > 4) return;
     let t = this.shots.length ? this.shots[this.shots.length - 1].end : now;
     for (const sh of shots) {
-      this.shots.push({ ...sh, start: t, end: t + sh.dur });
-      t += sh.dur;
+      const dur = sh.dur * CINE_SLOW;
+      this.shots.push({ ...sh, dur, start: t, end: t + dur });
+      t += dur;
+    }
+  }
+
+  // board props that would hide the action become see-through while a cutscene plays
+  setOccludersFaded(on) {
+    if (this.occFaded === on) return;
+    this.occFaded = on;
+    for (const grp of [this.terrainGroup, this.kpGroup, this.lootGroup]) {
+      grp.traverse((o) => {
+        if (!o.isMesh) return;
+        if (!o.userData.fadeMat) { o.userData.baseMat = o.material; o.userData.fadeMat = o.material.clone(); o.userData.fadeMat.transparent = true; o.userData.fadeMat.opacity = 0.28; o.userData.fadeMat.depthWrite = false; }
+        o.material = on ? o.userData.fadeMat : o.userData.baseMat;
+      });
     }
   }
 
@@ -273,7 +360,27 @@ export class BoardView {
     };
   }
 
+  enterCity(side) { this.cityView = side; this.shots = []; }
+  exitCity() { this.cityView = null; this.lookCur = this.camera.position.clone().add(new THREE.Vector3(0, -10, this.viewSide === 'w' ? -10 : 10)); }
+
+  pickPlot(ndcX, ndcY) {
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(new THREE.Vector2(ndcX, ndcY), this.camera);
+    const hit = ray.intersectObjects(this.plotPads, false)[0];
+    return hit ? hit.object.userData : null;
+  }
+
   updateCamera() {
+    if (this.cityView) {
+      const dir = this.cityView === 'w' ? 1 : -1;
+      const want = new THREE.Vector3(0, 20, dir * 47);
+      const look = new THREE.Vector3(0, 0, dir * 23);
+      this.camera.position.lerp(want, 0.06);
+      this.lookCur = this.lookCur ? this.lookCur.lerp(look, 0.06) : look.clone();
+      this.camera.lookAt(this.lookCur);
+      this.onCine(false);
+      return;
+    }
     if (this.droneSnap) {
       const d = this.droneSnap;
       const fx = Math.cos(d.yaw), fz = Math.sin(d.yaw);
@@ -288,13 +395,14 @@ export class BoardView {
     const shot = this.shots.find((sh) => sh.start <= this.time);
     this.onCine(!!shot);
     this.cineOn = !!shot;
+    this.setOccludersFaded(!!shot);
     if (shot) {
       const k = (this.time - shot.start) / shot.dur;
       const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
       const p = shot.pos2 ? shot.pos.clone().lerp(shot.pos2, e) : shot.pos;
-      this.camera.position.lerp(p, shot.cut ? 1 : 0.18);
+      this.camera.position.lerp(p, shot.cut ? 1 : 0.07);
       const look = shot.look2 ? shot.look.clone().lerp(shot.look2, e) : shot.look;
-      this.lookCur = this.lookCur ? this.lookCur.lerp(look, 0.2) : look.clone();
+      this.lookCur = this.lookCur ? this.lookCur.lerp(look, 0.08) : look.clone();
       this.camera.lookAt(this.lookCur);
       return;
     }
@@ -303,8 +411,8 @@ export class BoardView {
     const back = Math.cos(this.camPitch) * this.camDist;
     const want = new THREE.Vector3(t.x + Math.sin(this.camAz) * back, h, t.z + Math.cos(this.camAz) * back);
     if (this.lookCur) {
-      this.camera.position.lerp(want, 0.15);
-      this.lookCur.lerp(t, 0.15);
+      this.camera.position.lerp(want, 0.07);
+      this.lookCur.lerp(t, 0.07);
       this.camera.lookAt(this.lookCur);
       if (this.camera.position.distanceTo(want) < 0.05) this.lookCur = null;
     } else {
@@ -413,7 +521,7 @@ export class BoardView {
 
   sync(state, viewer) {
     this.state = state;
-    this.buildEnvironment(state.map);
+    this.buildEnvironment(state.map, lightPreset(state));
     const terr = territory(state);
     const sup = supplyMap(state, terr);
     const col = new THREE.Color();
@@ -471,26 +579,7 @@ export class BoardView {
       this.statusSprite(e, p, p.s === 'n' || sup[p.s][i], state);
     });
     for (const [id, e] of this.pieceMeshes) if (!seen.has(id)) { this.scene.remove(e.group); this.pieceMeshes.delete(id); }
-    // factories
-    for (const side of ['w', 'b']) {
-      const list = this.factoryMeshes[side];
-      const n = state.factories[side].length;
-      while (list.length < n) {
-        const f = makeFactory(side);
-        const k = list.length;
-        const pos = FACTORY_POS(side, k);
-        f.position.set(pos.x, -0.38, pos.z);
-        if (side === 'b') f.rotation.y = Math.PI;
-        this.factoryGroups[side].add(f);
-        list.push(f);
-        f.userData.track = this.trackLine(pos.x + 3, pos.z - Math.sign(pos.z) * 2, pos.x + 3, Math.sign(pos.z) * 18.6, -0.35, this.factoryGroups[side]);
-      }
-      while (list.length > n) {
-        const f = list.pop();
-        this.factoryGroups[side].remove(f);
-        this.factoryGroups[side].remove(f.userData.track);
-      }
-    }
+    this.syncCity(state);
     this.syncRails(state);
     // mines (owner, radar owner or revealed)
     this.mineGroup.clear();
@@ -526,6 +615,40 @@ export class BoardView {
       if (e.id <= this.lastFx) continue;
       this.lastFx = e.id;
       this.playFx(e, state);
+    }
+  }
+
+  syncCity(state) {
+    if (!state.city) return;
+    for (const side of ['w', 'b']) {
+      for (let i = 0; i < PLOTS; i++) {
+        const b = state.city[side][i];
+        const key = b ? `${b.type}|${b.lvl}|${b.build > 0 ? 1 : 0}` : '';
+        const cur = this.cityMeshes[side][i];
+        if ((cur ? cur.userData.key : '') === key) continue;
+        if (cur) this.cityGroup.remove(cur);
+        this.cityMeshes[side][i] = null;
+        if (!b) continue;
+        const m = makeBuilding(b.type, b.build > 0 ? b.lvl : b.lvl, side, b.build > 0);
+        const p = plotPos(side, i);
+        m.position.set(p.x, -0.38, p.z);
+        m.rotation.y = side === 'w' ? Math.PI : 0;
+        m.userData.key = key;
+        m.userData.type = b.type;
+        this.cityGroup.add(m);
+        this.cityMeshes[side][i] = m;
+      }
+    }
+    this.cityState = state.city;
+  }
+
+  // highlight plots in city mode: mine = side whose city is shown
+  setCityHighlight(side, sel) {
+    for (const pad of this.plotPads) {
+      const own = pad.userData.side === side;
+      pad.userData.hl = own ? (pad.userData.plot === sel ? 2 : 1) : 0;
+      pad.userData.frame.material.opacity = own ? 0.9 : 0.35;
+      pad.userData.frame.material.color.setHex(own ? 0xfee761 : 0x8a8a7a);
     }
   }
 
@@ -593,6 +716,7 @@ export class BoardView {
       ring.position.set(w.x, 0.33, w.z);
       this.kpGroup.add(ring);
     }
+    flatten(this.kpGroup, new Set(this.kpModels.map((m) => m.userData.beam || m.userData.dish).filter(Boolean)));
   }
 
   syncRails(state) {
@@ -654,30 +778,35 @@ export class BoardView {
   }
 
   syncFront(terr) {
+    const key = terr.join(',');
+    if (key === this.frontKey) return;
+    this.frontKey = key;
     this.frontGroup.clear();
-    const lineMat = new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.9 });
-    this.frontMat = lineMat;
+    if (!this.frontMat) this.frontMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(1.6, 1.25, 0.25), transparent: true, opacity: 0.9 });
+    const parts = [];
     for (let i = 0; i < 64; i++) {
       const [r, c] = rc(i);
       const w = sqToWorld(i);
-      if (c < 7 && terr[i] !== terr[i + 1] && (terr[i] || terr[i + 1])) {
-        const seg = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.14, TILE), lineMat);
-        seg.position.set(w.x + TILE / 2, 0.37, w.z);
-        this.frontGroup.add(seg);
-      }
-      if (r < 7 && terr[i] !== terr[i + 8] && (terr[i] || terr[i + 8])) {
-        const seg = new THREE.Mesh(new THREE.BoxGeometry(TILE, 0.14, 0.2), lineMat);
-        seg.position.set(w.x, 0.37, w.z - TILE / 2);
-        this.frontGroup.add(seg);
-      }
+      if (c < 7 && terr[i] !== terr[i + 1] && (terr[i] || terr[i + 1])) parts.push(new THREE.BoxGeometry(0.22, 0.14, TILE).translate(w.x + TILE / 2, 0.37, w.z));
+      if (r < 7 && terr[i] !== terr[i + 8] && (terr[i] || terr[i + 8])) parts.push(new THREE.BoxGeometry(TILE, 0.14, 0.22).translate(w.x, 0.37, w.z - TILE / 2));
     }
+    if (parts.length) this.frontGroup.add(new THREE.Mesh(mergeGeometries(parts.map((g) => g.toNonIndexed()), false), this.frontMat));
+  }
+
+  setCheck(sq) {
+    if (sq < 0) { if (this.checkRing) { this.scene.remove(this.checkRing); this.checkRing = null; } return; }
+    if (!this.checkRing) {
+      this.checkRing = new THREE.Mesh(new THREE.RingGeometry(1.6, 2.0, 32), new THREE.MeshBasicMaterial({ color: new THREE.Color(3, 0.4, 0.3), transparent: true, side: THREE.DoubleSide, depthWrite: false }));
+      this.checkRing.rotation.x = -Math.PI / 2;
+      this.scene.add(this.checkRing);
+    }
+    const w = sqToWorld(sq);
+    this.checkRing.position.set(w.x, 0.42, w.z);
   }
 
   updateLighting(state) {
     const night = state.effects && state.effects.blackout > 0;
     this.night = night;
-    this.sun.intensity = night ? 0.35 : 1.7;
-    this.hemi.intensity = night ? 0.35 : 1.15;
     if (state.effects && state.effects.blizzard > 0 && !this.snow) {
       const n = 900;
       const g = new THREE.BufferGeometry();
@@ -871,24 +1000,39 @@ export class BoardView {
       }
       case 'sabotage': {
         const en = e.side === 'w' ? 'b' : 'w';
-        const pos = FACTORY_POS(en, Math.max(0, (state.factories[en].length || 1) - 1));
-        this.nightFlash = 1.6;
-        this.cinematic([{ pos: new THREE.Vector3(pos.x + 8, 6, pos.z + (en === 'b' ? 10 : -10)), look: new THREE.Vector3(pos.x, 1, pos.z), dur: 2 }]);
+        const pos = plotPos(en, e.plot >= 0 ? e.plot : 2);
+        this.nightFlash = 2.6;
+        this.cinematic([{ pos: new THREE.Vector3(pos.x + 9, 6, pos.z + (en === 'b' ? 11 : -11)), pos2: new THREE.Vector3(pos.x + 5, 4, pos.z + (en === 'b' ? 8 : -8)), look: new THREE.Vector3(pos.x, 1, pos.z), dur: 2 }]);
         S('sneak');
         break;
       }
-      case 'factory': {
-        const pos = FACTORY_POS(e.side, e.idx || 0);
-        this.cinematic([{ pos: new THREE.Vector3(pos.x + 6, 7, pos.z + (e.side === 'w' ? 10 : -10)), look: new THREE.Vector3(pos.x, 1, pos.z), dur: 1.5 }]);
-        S('build');
+      case 'cityBuild': case 'cityDone': {
+        const pos = plotPos(e.side, e.plot);
+        const v = new THREE.Vector3(pos.x, 0, pos.z);
+        F.ring(pos.x, pos.z, e.k === 'cityDone' ? 0xfee761 : 0x9dff7a, 5, 1.2);
+        for (let k = 0; k < 6; k++) F.dust(pos.x + (Math.random() - 0.5) * 6, pos.z + (Math.random() - 0.5) * 3, 0xb0a890);
+        if (e.k === 'cityDone') F.text(pos.x, 6, pos.z, BUILDINGS[e.type] ? BUILDINGS[e.type].name.toUpperCase() : '', '#fee761');
+        if (!this.cityView) this.cinematic([this.orbitShot(v, 14, 9, 1.6, e.side === 'w' ? 0.3 : Math.PI + 0.3)]);
+        S(e.k === 'cityDone' ? 'rank' : 'build');
         break;
       }
-      case 'factoryHit': case 'factoryBoom': {
-        const pos = FACTORY_POS(e.side, e.idx || 0);
-        this.boom(new THREE.Vector3(pos.x, 1, pos.z), e.k === 'factoryBoom' ? 3.2 : 1.6);
-        if (e.k === 'factoryBoom') this.cinematic([{ pos: new THREE.Vector3(pos.x + 8, 8, pos.z + (e.side === 'w' ? 12 : -12)), look: new THREE.Vector3(pos.x, 1, pos.z), dur: 1.8 }]);
+      case 'bldHit': case 'bldBoom': {
+        const pos = plotPos(e.side, e.plot);
+        this.boom(new THREE.Vector3(pos.x, 1, pos.z), e.k === 'bldBoom' ? 3.2 : 1.6);
+        if (e.k === 'bldBoom') {
+          F.cloud(pos.x, pos.z, 0x8a8070);
+          this.cinematic([{ pos: new THREE.Vector3(pos.x + 9, 8, pos.z + (e.side === 'w' ? 13 : -13)), look: new THREE.Vector3(pos.x, 1, pos.z), dur: 1.8 }]);
+        }
         break;
       }
+      case 'support': {
+        const a = W(e.from, 1.5), b = W(e.to, 1.5);
+        F.beam(a, b, e.side === 'w' ? 0x9cc2ff : e.side === 'b' ? 0xffa494 : 0xdddddd, 2.4);
+        F.ring(a.x, a.z, 0xfee761, 2.4, 1.6);
+        S('radio');
+        break;
+      }
+      case 'evac': { const p = W(e.sq, 0); F.text(p.x, 4.5, p.z, 'ЭВАКУИРОВАН', '#9cc2ff'); F.ring(p.x, p.z, 0x9cc2ff, 3, 1); break; }
       case 'decoy': { const p = W(e.sq, 0); F.text(p.x, 4, p.z, 'ЛОЖНАЯ ЦЕЛЬ', '#c0cbdc'); break; }
       case 'resist': { const p = W(e.sq, 3); F.text(p.x, p.y, p.z, 'НЕ СЛОМЛЕН', '#c0cbdc'); break; }
       case 'card': S('card'); break;
@@ -897,6 +1041,7 @@ export class BoardView {
         const a = W(e.from, 1.5), b = W(e.to, 1.5);
         const mid = a.clone().lerp(b, 0.5);
         const side = new THREE.Vector3(b.z - a.z, 0, a.x - b.x).normalize().multiplyScalar(7);
+        if (e.sup) this.cinematic([{ pos: mid.clone().add(side.clone().multiplyScalar(1.8)).setY(11), look: mid, dur: 1.0 }]);
         this.cinematic([{ pos: mid.clone().add(side).setY(4), pos2: mid.clone().add(side.multiplyScalar(0.6)).setY(3), look: a, look2: b, dur: 1.3 }]);
         break;
       }
@@ -981,16 +1126,33 @@ export class BoardView {
     }
     if (this.nightFlash > 0) {
       this.nightFlash -= dt;
-      this.sun.intensity = this.night ? 0.35 : this.nightFlash > 0 ? 0.25 : 1.7;
-      this.hemi.intensity = this.night ? 0.35 : this.nightFlash > 0 ? 0.3 : 1.15;
+      const k = this.nightFlash > 0 ? 0.18 : 1;
+      this.sun.intensity = this.baseI.sun * k;
+      this.hemi.intensity = this.baseI.hemi * Math.max(k, 0.3);
+    }
+    updateWind(this.time);
+    updateWater(this.time);
+    if (this.clouds) this.clouds.userData.update(dt);
+    if (this.checkRing) { this.checkRing.material.opacity = 0.55 + Math.sin(this.time * 8) * 0.4; this.checkRing.scale.setScalar(1 + Math.sin(this.time * 8) * 0.06); }
+    for (const pad of this.plotPads) {
+      const hl = this.cityView ? pad.userData.hl : 0;
+      pad.visible = hl > 0;
+      pad.material.opacity = hl === 2 ? 0.45 + Math.sin(this.time * 6) * 0.15 : 0.12;
+    }
+    for (const side of ['w', 'b']) for (const m of this.cityMeshes[side]) {
+      if (!m) continue;
+      if (m.userData.flag) m.userData.flag.rotation.y = Math.sin(this.time * 3) * 0.3;
+      if (m.userData.dishes) for (const d of m.userData.dishes) d.rotation.y += dt * 1.2;
+      if (m.userData.jib) m.userData.jib.rotation.y = Math.sin(this.time * 0.6) * 1.2;
     }
     this.smokeT = (this.smokeT || 0) - dt;
     if (this.smokeT <= 0) {
       this.smokeT = 0.35;
-      for (const side of ['w', 'b']) for (const f of this.factoryMeshes[side]) {
-        const c = f.userData.chimneys[Math.floor(Math.random() * 2)].clone();
+      for (const side of ['w', 'b']) for (const f of this.cityMeshes[side]) {
+        if (!f || !f.userData.chimneys || !f.userData.chimneys.length) continue;
+        const c = f.userData.chimneys[Math.floor(Math.random() * f.userData.chimneys.length)].clone();
         f.localToWorld(c);
-        this.fx.smoke(c.x, c.y, c.z, 0x6e6a66, 0.5);
+        this.fx.smoke(c.x, c.y, c.z, f.userData.type === 'power' ? 0xe8e8e8 : 0x6e6a66, f.userData.type === 'power' ? 0.9 : 0.5);
       }
       for (const [, e] of this.pieceMeshes) if (e.t === 'T' && Math.random() < 0.5) { const p = e.group.position; this.fx.smoke(p.x + 1, 2.2, p.z, 0x555555, 0.35); }
     }

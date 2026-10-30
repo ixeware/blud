@@ -114,12 +114,17 @@ export function alloc(s, t, side, extra = {}) {
   };
 }
 
-export const ARMY_CAP = 18;
+export const ARMY_CAP = 16; // base; housing in the rear city adds +2 per level
 export const armySize = (s, side) => s.board.filter((p) => p && p.s === side).length;
+export function armyCap(s, side) {
+  let h = 0;
+  if (s.city && s.city[side]) for (const b of s.city[side]) if (b && b.type === 'housing') h += b.build === 0 ? b.lvl : b.lvl - 1;
+  return ARMY_CAP + 2 * h;
+}
 
 export function spawn(s, i, t, side, extra) {
   if (s.board[i]) return null;
-  if (side !== 'n' && armySize(s, side) >= ARMY_CAP) { addLog(s, `${SIDE_NAME[side]}: достигнут лимит армии (${ARMY_CAP}).`); return null; }
+  if (side !== 'n' && armySize(s, side) >= armyCap(s, side)) { addLog(s, `${SIDE_NAME[side]}: достигнут лимит армии (${armyCap(s, side)}).`); return null; }
   const p = alloc(s, t, side, extra);
   s.board[i] = p;
   fx(s, { k: 'spawn', sq: i });
@@ -227,17 +232,15 @@ export function killPiece(s, i, bySide, killer) {
   }
 }
 
-export function factoryCount(s, side) { return s.factories[side].length; }
-
-export function damageFactory(s, side, idx, dmg) {
-  const f = s.factories[side][idx];
-  if (!f) return false;
-  f.hp -= dmg;
-  fx(s, { k: 'factoryHit', side, idx });
-  if (f.hp <= 0) {
-    fx(s, { k: 'factoryBoom', side, idx });
-    s.factories[side].splice(idx, 1);
-    addLog(s, `${SIDE_NAME[side]}: завод уничтожен!`);
+export function damageBuilding(s, side, plot, dmg) {
+  const b = s.city[side][plot];
+  if (!b) return false;
+  b.hp -= dmg;
+  fx(s, { k: 'bldHit', side, plot });
+  if (b.hp <= 0) {
+    fx(s, { k: 'bldBoom', side, plot, type: b.type });
+    s.city[side][plot] = null;
+    addLog(s, `${SIDE_NAME[side]}: в тылу разрушено здание!`);
     return true;
   }
   return false;

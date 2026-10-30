@@ -26,6 +26,8 @@ function applyVolumes() {
   sfxBus.gain.value = muted ? 0 : sfxVol * 0.55;
   musicBus.gain.value = muted ? 0 : musicVol * 0.28;
 }
+export function suspendAudio() { if (ctx && ctx.state === 'running') ctx.suspend(); }
+export function resumeAudio() { if (ctx && ctx.state === 'suspended') ctx.resume(); }
 export function setVolumes(music, sfx) { musicVol = music; sfxVol = sfx; applyVolumes(); }
 export function setMuted(m) { muted = m; applyVolumes(); }
 export function isMuted() { return muted; }

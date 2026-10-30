@@ -1,9 +1,15 @@
 // Front Gambit — app controller: menus, modes (AI / hot-seat / online), board + real-time phases.
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import {
   newGame, apply, finishDuel, finishDrone, legalMovesFor, abilityList, shopTargets, canBuy, price, autoResolve,
-  territory, income, SHOP, SIDE_NAME, MAX_TURNS, KEYPOINTS, b2Available, b2Targets, unitDef, RANKS, ARMY_CAP, armySize, supplyMap,
+  territory, income, SHOP, SIDE_NAME, MAX_TURNS, KEYPOINTS, b2Available, b2Targets, unitDef, RANKS, armyCap, armySize, supplyMap,
+  inCheck, generalSquare,
 } from './rules.js';
+import { BUILDINGS, BUILDING_IDS, PLOTS, canBuild, canUpgrade, upgradeCost, level as cityLevel } from './city.js';
 import { ABILITIES } from './abilities.js';
 import { CARDS, cardTargets } from './cards.js';
 import { EVENTS } from './events.js';
@@ -13,7 +19,7 @@ import { DuelView } from './duelView.js';
 import { DuelSim, SPECIALS } from './duel.js';
 import { DroneSim, DRONE_BATTERY } from './drone.js';
 import { Controls } from './input.js';
-import { initAudio, sfx, setVolumes, setMuted, isMuted, droneBuzz, playMusic } from './audio.js';
+import { initAudio, sfx, setVolumes, setMuted, isMuted, droneBuzz, playMusic, suspendAudio, resumeAudio } from './audio.js';
 import { Net } from './net.js';
 import { A, ico, preload } from './assets.js';
 import { Workshop, loadLibrary } from './editor.js';
@@ -43,18 +49,33 @@ const canvas = $('gl');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.3;
+// post-processing: bloom makes muzzle flashes, fire, explosions and lamps glow
+const composer = new EffectComposer(renderer);
+const renderPass = new RenderPass(new THREE.Scene(), new THREE.PerspectiveCamera());
+const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.5, 0.95);
+composer.addPass(renderPass);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+function draw(scene, camera) {
+  if (settings.gfx === 'high') { renderPass.scene = scene; renderPass.camera = camera; composer.render(); }
+  else renderer.render(scene, camera);
+}
 const board = new BoardView(renderer);
+board.lowGfx = settings.gfx !== 'high';
 const duel = new DuelView(renderer);
 const workshop = new Workshop(renderer, { onClose: () => { show('menu'); playMusic('menu'); }, sfx });
 board.onSound = (n) => sfx(n);
-board.onCine = (on) => $('letterbox').classList.toggle('on', on);
+board.onCine = (on) => { $('letterbox').classList.toggle('on', on); $('hud').classList.toggle('cine', on); };
 const controls = new Controls();
 controls.bindSticks($('stickL'), $('stickR'), $('abBtn'), $('reloadBtn'));
 controls.bindMouse(canvas, () => app.rtView === 'duel');
 
 function applySettings() {
   renderer.shadowMap.enabled = settings.gfx === 'high';
-  renderer.setPixelRatio(settings.gfx === 'high' ? Math.min(window.devicePixelRatio, 2) : Math.min(window.devicePixelRatio, 1.25));
+  renderer.setPixelRatio(settings.gfx === 'high' ? Math.min(window.devicePixelRatio, 1.6) : Math.min(window.devicePixelRatio, 1.2));
+  board.lowGfx = settings.gfx !== 'high';
   setVolumes(settings.music / 100, settings.sfx / 100);
   board.cineEnabled = settings.cine;
   controls.aimAssist = settings.assist;
@@ -63,6 +84,8 @@ function applySettings() {
 function resize() {
   const w = innerWidth, h = innerHeight;
   renderer.setSize(w, h, false);
+  composer.setPixelRatio(renderer.getPixelRatio());
+  composer.setSize(w, h);
   board.resize(w, h);
   duel.resize(w, h);
   workshop.resize(w, h);
@@ -121,13 +144,19 @@ $('toggleSnd').onclick = () => { setMuted(!isMuted()); $('sndIcon').src = A.icon
 $('quitBtn').onclick = () => quitToMenu();
 $('overMenu').onclick = () => quitToMenu();
 document.addEventListener('pointerdown', () => initAudio(), { once: true });
+// stop all sound while the app is in the background (Android calls these from onPause/onResume too)
+window.onAppPause = () => { suspendAudio(); };
+window.onAppResume = () => { if (!document.hidden) resumeAudio(); };
+document.addEventListener('visibilitychange', () => (document.hidden ? suspendAudio() : resumeAudio()));
+window.addEventListener('pagehide', () => suspendAudio());
 
 function quitToMenu() {
   clearTimeout(app.aiTimer);
   if (app.net) { app.net.destroy(); app.net = null; }
   app.mode = null; app.state = null; app.sim = null;
   endRtView();
-  ['hud', 'pause', 'over', 'shop', 'sabo', 'lobby', 'duelHud', 'droneHud', 'sticks', 'banner', 'cards', 'journal', 'eventPop', 'setup', 'vs'].forEach((id) => show(id, false));
+  if (app.cityMode) closeCity();
+  ['hud', 'pause', 'over', 'shop', 'sabo', 'lobby', 'duelHud', 'droneHud', 'sticks', 'banner', 'cards', 'journal', 'eventPop', 'setup', 'vs', 'cityHud'].forEach((id) => show(id, false));
   show('menu');
   playMusic('menu');
   droneBuzz(false);
@@ -140,6 +169,7 @@ window.onAndroidBack = () => {
   const open = ['help', 'shop', 'sabo', 'pause', 'lobby', 'cards', 'journal', 'setup', 'eventPop'].find((id) => !$(id).classList.contains('hidden'));
   if (open) { if (open === 'lobby') quitToMenu(); else show(open, false); return 'ok'; }
   if (app.targeting) { cancelTargeting(); return 'ok'; }
+  if (app.cityMode) { closeCity(); return 'ok'; }
   show('pause');
   return 'ok';
 };
@@ -270,6 +300,8 @@ function onStateChange() {
   updateHud();
   updateLog();
   updateHighlights();
+  updateCheck();
+  if (app.cityMode) { if (!myTurn() || s.phase !== 'board') closeCity(); else renderCity(); }
   // event popups
   if (s.popup && s.popup.seq > app.popupSeen) {
     app.popupSeen = s.popup.seq;
@@ -286,6 +318,21 @@ function onStateChange() {
   if (s.phase === 'board' && app.rtView) endRtView();
   pushState();
   scheduleAi();
+}
+
+// "check": the general can be attacked this turn
+function updateCheck() {
+  const s = app.state;
+  let sq = -1;
+  for (const side of ['w', 'b']) if (inCheck(s, side) && (localSides().includes(side) || s.turn === side)) { sq = generalSquare(s, side); break; }
+  board.setCheck(s.phase === 'board' ? sq : -1);
+  const mine = myTurn() && inCheck(s, actingSide());
+  show('checkBadge', mine);
+  const key = s.turnNo + s.turn;
+  if (mine && app.checkWarned !== key) {
+    app.checkWarned = key;
+    setTimeout(() => { banner('ШАХ!', 'Ваш генерал под ударом — защитите его'); sfx('alarm'); }, 900);
+  }
 }
 
 function scheduleAi() {
@@ -323,8 +370,9 @@ function updateHud() {
   $('actBadge').innerHTML = `<span class="pips">${Array.from({ length: Math.min(5, s.actionsLeft) }, () => ico(A.icon('action'))).join('')}</span>`;
   $('money').textContent = s.money[side];
   $('income').textContent = `+${income(s, side)}`;
-  $('factCount').textContent = s.factories[side].length;
-  $('armyCount').textContent = `${armySize(s, side)}/${ARMY_CAP}`;
+  $('factCount').textContent = s.city[side].filter((b) => b).length;
+  $('armyCount').textContent = `${armySize(s, side)}/${armyCap(s, side)}`;
+  $('cityBtn').disabled = !myTurn();
   const terr = territory(s);
   const tw = terr.filter((x) => x === 'w').length, tb = terr.filter((x) => x === 'b').length;
   const pw = Math.round((tw / Math.max(1, tw + tb)) * 100);
@@ -543,6 +591,70 @@ $('logBtn').onclick = () => {
   show('journal');
 };
 
+// ---------- rear city ----------
+$('cityBtn').onclick = () => { if (!myTurn()) return; sfx('click'); openCity(); };
+$('cityExit').onclick = () => { sfx('click'); closeCity(); };
+function openCity() {
+  app.cityMode = true;
+  app.cityPlot = app.state.city[actingSide()].findIndex((b) => !b);
+  app.sel = -1; app.targeting = null;
+  show('targetBar', false); show('info', false);
+  $('hud').classList.add('city');
+  show('cityHud');
+  board.enterCity(actingSide());
+  renderCity();
+}
+function closeCity() {
+  app.cityMode = false;
+  $('hud').classList.remove('city');
+  show('cityHud', false);
+  board.exitCity();
+  board.setCityHighlight(null, -1);
+}
+function stars(n) { return Array.from({ length: 3 }, (_, i) => `<i class="${i < n ? 'on' : ''}"></i>`).join(''); }
+function renderCity() {
+  const s = app.state;
+  if (!app.cityMode || !s) return;
+  const side = actingSide();
+  board.setCityHighlight(side, app.cityPlot);
+  $('cityMoney').textContent = s.money[side];
+  const body = $('cityBody');
+  const plot = app.cityPlot;
+  const b = plot >= 0 ? s.city[side][plot] : null;
+  const busy = s.builtTurn[side] === s.turnNo;
+  if (plot < 0) { body.innerHTML = '<p class="muted">Все участки застроены. Выберите здание, чтобы улучшить его.</p>'; return; }
+  if (!b) {
+    body.innerHTML = `<div class="plaque small">Участок ${plot + 1}: что построить?</div>${busy ? '<p class="si-err">В этом ходу уже идёт стройка — следующая в новом ходу.</p>' : ''}<div class="city-grid"></div>`;
+    const grid = body.querySelector('.city-grid');
+    for (const id of BUILDING_IDS) {
+      const B = BUILDINGS[id];
+      const err = canBuild(s, side, plot, id);
+      const el = document.createElement('button');
+      el.className = 'shop-item' + (err ? ' off' : '');
+      el.innerHTML = `<div class="si-title">${B.name}</div><div class="si-art">${ico(A.icon(B.icon))}</div>
+        <div class="si-price">${ico(A.icon('coin'))}${B.cost}</div><div class="si-desc">${B.desc}</div>${err ? `<div class="si-err">${err}</div>` : ''}`;
+      el.onclick = () => {
+        const e2 = canBuild(app.state, side, plot, id);
+        if (e2) { toast(e2); sfx('error'); return; }
+        sfx('build');
+        sendCmd({ c: 'build', plot, type: id });
+        setTimeout(renderCity, 150);
+      };
+      grid.appendChild(el);
+    }
+  } else {
+    const B = BUILDINGS[b.type];
+    const err = canUpgrade(s, side, plot);
+    body.innerHTML = `<div class="city-info"><div class="slot por">${ico(A.icon(B.icon))}</div><div>
+      <div class="plaque small">${B.name}</div><div class="stars">${stars(b.build > 0 ? b.lvl - 1 : b.lvl)}</div>
+      <div class="muted">Прочность ${Math.max(0, b.hp)}/${b.maxHp}${b.build > 0 ? ' · идёт стройка (готово в следующем ходу)' : ''}</div></div></div>
+      <p>${B.desc}</p>
+      ${b.lvl < 3 ? `<button class="btn gold" id="cityUp"${err ? ' disabled' : ''}>${ico(A.icon('plus'))}Улучшить до ${b.lvl + 1} ур. · ${upgradeCost(b)}</button>${err ? `<p class="si-err">${err}</p>` : ''}` : '<p class="muted">Максимальный уровень.</p>'}`;
+    const up = $('cityUp');
+    if (up) up.onclick = () => { sfx('build'); sendCmd({ c: 'upgrade', plot }); setTimeout(renderCity, 150); };
+  }
+}
+
 // shop
 const SHOP_TABS = [['army', 'unit_P', 'Войска'], ['tech', 'unit_R', 'Техника'], ['strike', 'shop_airstrike', 'Удары'], ['rear', 'factory', 'Тыл'], ['custom', 'wrench', 'Особые']];
 let shopTab = 'army';
@@ -663,14 +775,16 @@ canvas.addEventListener('pointermove', (e) => {
     return;
   }
   if (Math.hypot(e.clientX - t.sx, e.clientY - t.sy) > 10) gesture.moved = true;
-  if (gesture.moved) { if (t.btn === 2) board.rotate(dx * 0.01); else board.pan(dx, dy); }
+  if (gesture.moved && !app.cityMode) { if (t.btn === 2) board.rotate(dx * 0.01); else board.pan(dx, dy); }
 });
 const endPointer = (e) => {
   const t = touches.get(e.pointerId);
   touches.delete(e.pointerId);
   if (!t || app.rtView || workshop.active) return;
   if (gesture && !gesture.moved && !gesture.multi && touches.size === 0) {
-    onTapSquare(board.pick((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1));
+    const nx = (e.clientX / innerWidth) * 2 - 1, ny = -(e.clientY / innerHeight) * 2 + 1;
+    if (app.cityMode) { const hit = board.pickPlot(nx, ny); if (hit && hit.side === actingSide()) { sfx('select'); app.cityPlot = hit.plot; renderCity(); } }
+    else onTapSquare(board.pick(nx, ny));
   }
   if (touches.size === 0) gesture = null;
 };
@@ -690,7 +804,6 @@ function ctrlFor(side, role, rt) {
 
 function fighterTags(f) {
   const t = [RANKS[f.rank]];
-  if (f.allies) t.push(`+${f.allies} союзн.`);
   if (f.dug) t.push('Окоп');
   if (f.bld) t.push('Здание');
   if (f.smoke) t.push('Дым');
@@ -722,8 +835,9 @@ function startRealtime() {
     if (app.mode === 'guest') localTeam = rt.att.s === 'b' ? 'att' : rt.def.s === 'b' ? 'def' : null;
     else localTeam = ca === 'local' ? 'att' : cd === 'local' ? 'def' : null;
     app.localTeam = localTeam;
-    const boardShot = settings.cine ? 1.3 : 0;
-    app.intro = boardShot + 1.7;
+    const nSup = rt.att.sup.length + rt.def.sup.length;
+    const boardShot = settings.cine ? (nSup ? 3.9 : 2.2) : 0;
+    app.intro = boardShot + 2.2;
     app.showDuelAt = performance.now() + boardShot * 1000;
     if (authority()) {
       app.sim = new DuelSim(rt, { ctrl: { att: ca, def: cd }, difficulty: settings.diff });
@@ -740,6 +854,9 @@ function startRealtime() {
     $('vsNameD').textContent = `${rt.def.name} · ${SIDE_NAME[rt.def.s]}`;
     $('vsTagsA').innerHTML = fighterTags(rt.att);
     $('vsTagsD').innerHTML = fighterTags(rt.def);
+    const supHtml = (list) => (list.length ? `<span class="vs-sup-t">На помощь:</span>${list.map((f) => `<div class="slot mini">${ico(porOf(f))}</div>`).join('')}` : '');
+    $('vsSupA').innerHTML = supHtml(rt.att.sup);
+    $('vsSupD').innerHTML = supHtml(rt.def.sup);
     app.rtT0 = performance.now();
     app.rtStage = 0;
     app.rtBoardShot = boardShot * 1000;
@@ -747,8 +864,8 @@ function startRealtime() {
     $('abName').textContent = SPECIALS[f.duel] ? SPECIALS[f.duel].name : '—';
     $('abIcon').src = A.ab(f.duel || 'd_grenade');
     $('dPorA').src = porOf(rt.att); $('dPorD').src = porOf(rt.def);
-    $('dNameA').textContent = `${rt.att.name}${rt.att.allies ? ' +' + rt.att.allies : ''}`;
-    $('dNameD').textContent = `${rt.def.allies ? rt.def.allies + '+ ' : ''}${rt.def.name}`;
+    $('dNameA').textContent = `${rt.att.name}${rt.att.sup.length ? ' +' + rt.att.sup.length : ''}`;
+    $('dNameD').textContent = `${rt.def.sup.length ? rt.def.sup.length + '+ ' : ''}${rt.def.name}`;
   } else {
     const local = app.mode === 'guest' ? rt.side === 'b' : ctrlFor(rt.side, 'att') === 'local' && !isAiSide(rt.side);
     app.localTeam = local ? 'drone' : null;
@@ -787,7 +904,7 @@ function updateRtStage(now) {
     show('vs'); sfx('vs'); playMusic('duel');
     show('hud', false);
   }
-  if (app.rtStage === 1 && e >= app.rtBoardShot + 1500) {
+  if (app.rtStage === 1 && e >= app.rtBoardShot + 2000) {
     app.rtStage = 2;
     const lt = app.localTeam;
     show('vs', false);
@@ -962,7 +1079,10 @@ function renderHelp() {
   const units = ['P', 'N', 'B', 'R', 'Q', 'K', 'M', 'E', 'A', 'L', 'T'];
   $('helpBody').innerHTML = `<div class="plaque">Как играть</div>
   <p><b>Цель:</b> уничтожить вражеского <b>Генерала</b>. Шаха и мата нет — генерала берут в бою, дронами, артиллерией или авиацией. На 60-м ходу — перемирие и победа по очкам.</p>
-  <p><b>Ход:</b> одно действие — ход фигурой, способность, дрон, авиаудар или B-2. Покупки и приказы действие не тратят.</p>
+  <p><b>Ход:</b> одно действие — ход фигурой, способность, дрон, авиаудар или B-2. Покупки, стройка и приказы действие не тратят.</p>
+  <p><b>Защита как в шахматах:</b> все фигуры, которые «защищают» атакованную клетку (могли бы на неё сходить), вступают в бой вместе с ней, а рядом с генералом — вся его охрана. Фигуры, которые тоже бьют эту клетку, помогают атакующему. Урон и потери в бою переносятся на доску; раненого генерала эвакуируют.</p>
+  <p><b>Шах:</b> если вашего генерала можно атаковать, загорается «ШАХ» — защитите его.</p>
+  <p><b>Тыл:</b> кнопка «Тыл» — ваш город за линией фронта. Стройте заводы, жилые кварталы, казармы, электростанцию, госпиталь, авиабазу и другое; у каждого здания 3 уровня. Враг может бить по городу дронами и диверсиями.</p>
   <p><b>Атака = бой!</b> При взятии начинается схватка на арене: левый стик — движение, правый — прицел и огонь, кнопка — спецприём, отдельная кнопка — перезарядка. Снайперы делают хедшоты, дома рушатся, соседние союзники приходят на помощь.</p>
   <p><b>Звания:</b> за победы фигуры растут от Рядового до Ветерана: больше HP и урона.</p>
   <p><b>Линия фронта и логистика:</b> территория даёт доход, отрезанные от тыла юниты не лечатся. Ж/д перебрасывает войска, бронепоезд ездит по путям. Объекты на карте: нефтевышки (+доход), радары (видят мины и маскировку), аэродромы (дешёвая авиация).</p>
@@ -982,16 +1102,16 @@ function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.1, (now - lastT) / 1000);
   lastT = now;
-  if (workshop.active) { workshop.update(dt); renderer.render(workshop.scene, workshop.camera); return; }
+  if (workshop.active) { workshop.update(dt); draw(workshop.scene, workshop.camera); return; }
   if (app.state) { updateRtStage(now); tickRealtime(dt); }
   if (app.rtView === 'duel' && duel.scene && now >= app.showDuelAt) {
     $('letterbox').classList.remove('on');
     duel.update(dt);
-    renderer.render(duel.scene, duel.camera);
+    draw(duel.scene, duel.camera);
   } else {
     if (!app.state) board.camAz += dt * 0.05;
     board.update(dt);
-    renderer.render(board.scene, board.camera);
+    draw(board.scene, board.camera);
   }
 }
 board.sync(newGame(), ['w']);

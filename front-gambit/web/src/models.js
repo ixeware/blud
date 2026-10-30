@@ -39,6 +39,7 @@ const box = (w, h, d) => geo(`b${w},${h},${d}`, () => new THREE.BoxGeometry(w, h
 const cyl = (rt, rb, h, seg = 10) => geo(`c${rt},${rb},${h},${seg}`, () => new THREE.CylinderGeometry(rt, rb, h, seg));
 const sph = (r, seg = 10) => geo(`s${r},${seg}`, () => new THREE.SphereGeometry(r, seg, Math.max(6, seg - 2)));
 const cone = (r, h, seg = 8) => geo(`k${r},${h},${seg}`, () => new THREE.ConeGeometry(r, h, seg));
+const halfCyl = (r, h, seg = 12, open = false) => geo(`hc${r},${h},${seg},${open}`, () => new THREE.CylinderGeometry(r, r, h, seg, 1, open, 0, Math.PI));
 
 function m(g, material, x = 0, y = 0, z = 0, parent, rx = 0, ry = 0, rz = 0) {
   const mesh = new THREE.Mesh(g, material);
@@ -49,31 +50,57 @@ function m(g, material, x = 0, y = 0, z = 0, parent, rx = 0, ry = 0, rz = 0) {
   return mesh;
 }
 
-// Merge static child meshes of a group per material to cut draw calls.
-export function bake(group) {
-  const byMat = new Map();
-  const keep = [];
-  group.updateMatrix();
-  for (const c of [...group.children]) {
-    if (c.isMesh && !c.userData.dynamic && !c.material.transparent) {
-      c.updateMatrix();
-      if (!byMat.has(c.material)) byMat.set(c.material, []);
-      const g = c.geometry.index ? c.geometry.toNonIndexed() : c.geometry.clone();
-      g.applyMatrix4(c.matrix);
-      for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(k)) g.deleteAttribute(k);
-      byMat.get(c.material).push(g);
-      group.remove(c);
-    } else keep.push(c);
+// One shared vertex-coloured material for all flat-coloured parts: whole models collapse into 1-3 draw calls.
+export const VC_MAT = new THREE.MeshLambertMaterial({ vertexColors: true });
+
+// Merge meshes into as few draw calls as possible. Groups in `anims` (and groups/meshes flagged
+// userData.dynamic) keep their own transform so they can still be animated; their children merge into them.
+export function flatten(root, anims = new Set()) {
+  root.updateMatrixWorld(true);
+  const buckets = new Map();
+  const remove = [];
+  root.traverse((o) => {
+    if (!o.isMesh || o.isInstancedMesh || o.isSprite || o === root) return;
+    if (o.userData.dynamic || o.material.transparent || !o.material.isMeshLambertMaterial || (o.material.side === THREE.DoubleSide && o.material.map)) return;
+    let owner = o.parent;
+    while (owner !== root && !anims.has(owner) && !owner.userData.dynamic) owner = owner.parent;
+    if (!buckets.has(owner)) buckets.set(owner, { inv: new THREE.Matrix4().copy(owner.matrixWorld).invert(), vc: [], byMat: new Map() });
+    const B = buckets.get(owner);
+    const g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+    g.applyMatrix4(new THREE.Matrix4().multiplyMatrices(B.inv, o.matrixWorld));
+    const M = o.material;
+    const keepColor = M.vertexColors && !M.map && g.attributes.color;
+    for (const k of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(k) && !(keepColor && k === 'color')) g.deleteAttribute(k);
+    if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+    const plain = !M.map && (!M.emissive || M.emissive.getHex() === 0) && M.side !== THREE.DoubleSide && !M.flatShading;
+    if (keepColor && plain) {
+      B.vc.push(g);
+    } else if (plain && !M.vertexColors) {
+      const n = g.attributes.position.count, col = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) { col[i * 3] = M.color.r; col[i * 3 + 1] = M.color.g; col[i * 3 + 2] = M.color.b; }
+      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      B.vc.push(g);
+    } else {
+      if (!B.byMat.has(M)) B.byMat.set(M, []);
+      B.byMat.get(M).push(g);
+    }
+    remove.push(o);
+  });
+  for (const o of remove) o.parent.remove(o);
+  for (const [owner, B] of buckets) {
+    if (B.vc.length) {
+      const merged = mergeGeometries(B.vc, false);
+      if (merged) { const mesh = new THREE.Mesh(merged, VC_MAT); mesh.castShadow = true; mesh.receiveShadow = true; owner.add(mesh); }
+    }
+    for (const [material, list] of B.byMat) {
+      const merged = mergeGeometries(list, false);
+      if (merged) { const mesh = new THREE.Mesh(merged, material); mesh.castShadow = true; mesh.receiveShadow = true; owner.add(mesh); }
+    }
   }
-  for (const [material, list] of byMat) {
-    const merged = mergeGeometries(list, false);
-    if (!merged) continue;
-    const mesh = new THREE.Mesh(merged, material);
-    mesh.castShadow = true;
-    group.add(mesh);
-  }
-  return group;
+  return root;
 }
+
+export function bake(group) { return flatten(group); }
 
 const SKIN = 0xd9a77e, GUN = 0x262626, GUN2 = 0x4a3a28, OLIVE = 0x4b5a32, KHAKI = 0x8a7d55, BOOT = 0x2b2118;
 
@@ -491,12 +518,6 @@ export function customModel(def, side) {
   return g;
 }
 
-function bakeDeep(g) {
-  for (const c of [...g.children]) if (!c.isMesh) bakeDeep(c);
-  if (g.children.some((c) => c.isMesh)) bake(g);
-  return g;
-}
-
 export function unitModel(t, side, ctx = 'board', def = null) {
   let g;
   switch (t) {
@@ -511,8 +532,16 @@ export function unitModel(t, side, ctx = 'board', def = null) {
     default: g = soldier(side, t); break;
   }
   if (t !== 'C') {
-    for (const c of [...g.children]) if (!c.isMesh) bakeDeep(c);
-    bake(g);
+    const U = g.userData;
+    // on the board only rotors, dishes and flags move; in duels legs, torso, gun, turret and hull animate too
+    const anims = new Set([U.rotor, U.tailRotor, U.dish].filter(Boolean));
+    if (ctx !== 'board') {
+      for (const x of [U.aim, U.gun, U.body, U.bob, ...(U.legs || [])]) if (x) anims.add(x);
+    } else {
+      for (const l of U.legs || []) l.userData.dynamic = false; // board soldiers stand still: legs merge with the body
+      if (['R', 'A', 'L', 'T'].includes(t) && U.aim) anims.add(U.aim);
+    }
+    flatten(g, anims);
   }
   g.userData.kind = t;
   return g;
@@ -527,6 +556,32 @@ export function makeTree(scale = 1, snowy = false, dry = false) {
   m(cone(0.75, 1.4, 7), mat(snowy ? 0xf4f8fa : dry ? 0xb0a855 : 0x3a8034), 0, 2.5, 0, g);
   g.scale.setScalar(scale);
   return bake(g);
+}
+
+const treeGeos = {};
+function treeGeometry(variant) {
+  if (!treeGeos[variant]) {
+    const t = makeTree(1, variant === 'snow', variant === 'dry');
+    const mesh = t.children.find((c) => c.isMesh);
+    treeGeos[variant] = mesh.geometry;
+  }
+  return treeGeos[variant];
+}
+// many trees in one draw call: items = [{x, y, z, s}]
+export function makeForest(items, variant = 'green') {
+  const im = new THREE.InstancedMesh(treeGeometry(variant), VC_MAT, Math.max(1, items.length));
+  const d = new THREE.Object3D();
+  items.forEach((it, i) => {
+    d.position.set(it.x, it.y || 0, it.z);
+    d.rotation.set(0, Math.random() * Math.PI * 2, 0);
+    d.scale.setScalar(it.s || 1);
+    d.updateMatrix();
+    im.setMatrixAt(i, d.matrix);
+  });
+  im.count = items.length;
+  im.castShadow = true;
+  im.receiveShadow = true;
+  return im;
 }
 
 export function makeFactory(side) {
@@ -594,7 +649,7 @@ export function makeKeypoint(type) {
     m(box(0.25, 0.4, 0.05), mat(0x6d7a82), -0.7, 0.2, 0, pl);
   }
   g.traverse((o) => { if (o.isMesh) o.castShadow = true; });
-  return g;
+  return flatten(g, new Set([g.userData.beam, g.userData.dish].filter(Boolean)));
 }
 
 export function makeObstacle(o, theme) {
@@ -631,7 +686,7 @@ export function makeObstacle(o, theme) {
     const body = new THREE.Group();
     g.add(body);
     m(box(o.w, 3.2, o.d), wallM, 0, 1.6, 0, body).receiveShadow = true;
-    const roof = m(box(o.w + 0.4, 0.25, o.d + 0.4), mat(0x6b4a3a, { map: tex('tex_roof', 1) }), 0, 3.3, 0, body);
+    const roof = m(box(o.w + 0.4, 0.25, o.d + 0.4), mat(0xd8a888, { map: tex('tex_roof', 2) }), 0, 3.3, 0, body);
     roof.receiveShadow = true;
     for (let x = -o.w / 2 + 0.8; x < o.w / 2 - 0.4; x += 1.3) {
       for (const z of [o.d / 2 + 0.01, -o.d / 2 - 0.01]) m(box(0.6, 0.7, 0.05), mat(0x2a3540), x, 2.1, z, body);
@@ -639,5 +694,267 @@ export function makeObstacle(o, theme) {
     g.userData.body = body;
   }
   g.position.set(o.x, 0, o.z);
-  return bake(g);
+  return flatten(g, new Set([g.userData.body].filter(Boolean)));
+}
+
+// ---------- rear city buildings (front faces +z, ~8 x 4.8 footprint) ----------
+const winMat = () => mat(0xffd27a, { emissive: 0x7a5a20 });
+function windows(g, w, h, z, y0, floors, cols) {
+  for (let f = 0; f < floors; f++) for (let c = 0; c < cols; c++) {
+    m(box(0.42, 0.5, 0.06), winMat(), -w / 2 + (c + 0.5) * (w / cols), y0 + f * h, z, g);
+  }
+}
+
+function bFactory(C, lvl) {
+  const g = new THREE.Group();
+  const f = makeFactory(C.side);
+  g.add(f);
+  g.userData.chimneys = f.userData.chimneys.slice();
+  if (lvl >= 2) {
+    m(cyl(0.9, 0.9, 3.2, 12), mat(0x9aa0a8, { map: tex('tex_metal', 1) }), -3.0, 1.6, -0.6, g);
+    m(cone(0.95, 0.6, 12), mat(0x7a8088), -3.0, 3.5, -0.6, g);
+  }
+  if (lvl >= 3) {
+    const f2 = makeFactory(C.side);
+    f2.scale.set(0.7, 0.9, 0.7);
+    f2.position.set(2.6, 0, -0.4);
+    g.add(f2);
+    g.userData.chimneys.push(new THREE.Vector3(2.6 + 1.1, 4.2, -1.1));
+  }
+  return g;
+}
+
+function bHousing(C, lvl) {
+  const g = new THREE.Group();
+  const floors = 2 + (lvl - 1) * 2;
+  const h = floors * 0.9 + 0.4;
+  const body = mat(0xd8cbb0, { map: tex('tex_concrete', 1) });
+  for (const [x, w] of lvl >= 2 ? [[-1.8, 3.4], [2.0, 3.0]] : [[0, 5]]) {
+    const fl = x > 0 && lvl >= 2 ? floors - 2 : floors;
+    const hh = fl * 0.9 + 0.4;
+    m(box(w, hh, 3.2), body, x, hh / 2, 0, g);
+    m(box(w + 0.2, 0.2, 3.4), mat(0x6a5a50), x, hh + 0.1, 0, g);
+    windows(g, w, 0.9, 1.62, 0.75, fl, Math.round(w / 0.9));
+    for (let f = 1; f < fl; f += 2) m(box(w * 0.9, 0.08, 0.4), mat(0x8a8a8a), x, f * 0.9 + 0.3, 1.8, g);
+  }
+  m(box(0.6, 0.9, 0.08), mat(0x4a3a2a), 0, 0.45, 1.62, g);
+  m(box(5.6, 0.05, 1.0), mat(0x7d9a4a), 0, 0.03, 2.2, g);
+  void h; void C;
+  return g;
+}
+
+function bBarracks(C, lvl) {
+  const g = new THREE.Group();
+  const n = lvl >= 2 ? 2 : 1;
+  for (let k = 0; k < n; k++) {
+    const z = -1 + k * -0.2 - k * 0;
+    const x = n === 1 ? -0.8 : -2 + k * 3.6;
+    m(box(3.2, 1.3, 2.2), mat(0x8a7a5a, { map: tex('tex_wood', 1) }), x, 0.65, z, g);
+    const roof = m(cyl(0.01, 1.7, 3.3, 4), mat(0x5a4a3a, { map: tex('tex_roof', 1) }), x, 1.7, z, g, 0, Math.PI / 4, Math.PI / 2);
+    roof.scale.set(1, 1, 0.55);
+    windows(g, 3.2, 1, z + 1.12, 0.75, 1, 4);
+  }
+  m(box(5.6, 0.04, 1.6), mat(0x9a9a8a), 0.4, 0.03, 1.4, g);
+  m(cyl(0.05, 0.05, 3.2, 6), mat(0xcccccc), 2.8, 1.6, 1.4, g);
+  const flag = m(box(0.9, 0.55, 0.04), mat(C.main), 3.25, 2.9, 1.4, g);
+  flag.userData.dynamic = true;
+  g.userData.flag = flag;
+  for (let i = 0; i < 3 + lvl; i++) { const sd = soldier(C.side, 'S'); sd.scale.setScalar(0.5); sd.position.set(-1.6 + i * 0.7, 0, 1.4); sd.rotation.y = -Math.PI / 2; g.add(sd); }
+  if (lvl >= 3) {
+    for (const [x, z] of [[-3.6, 2], [3.6, -2]]) {
+      for (const dx of [-0.3, 0.3]) for (const dz of [-0.3, 0.3]) m(box(0.08, 3, 0.08), mat(0x5a4a3a), x + dx, 1.5, z + dz, g);
+      m(box(1, 0.6, 1), mat(0x6a5a40), x, 3.2, z, g);
+    }
+  }
+  return g;
+}
+
+function bTankworks(C, lvl) {
+  const g = new THREE.Group();
+  const hall = m(halfCyl(2.2, 6.4, 14), mat(0x7a8590, { map: tex('tex_metal', 1) }), 0, 0, -0.4, g);
+  hall.rotation.set(0, 0, Math.PI / 2);
+  m(box(6.4, 0.3, 4.4), mat(0x55555a), 0, 0.15, -0.4, g);
+  m(box(2.6, 2.0, 0.1), mat(0x2a2a2a), 0, 1.0, 1.8, g);
+  const t = tank(C.side);
+  t.scale.setScalar(0.55);
+  t.position.set(-1.4, 0, 2.3);
+  g.add(t);
+  if (lvl >= 2) { const t2 = tank(C.side); t2.scale.setScalar(0.55); t2.position.set(1.6, 0, 2.3); g.add(t2); }
+  if (lvl >= 3) {
+    m(box(0.25, 5, 0.25), mat(0xd9a32b), 3.6, 2.5, 1.5, g);
+    m(box(4, 0.25, 0.25), mat(0xd9a32b), 2.0, 5, 1.5, g);
+    m(box(0.05, 1.5, 0.05), mat(0x333333), 0.6, 4.2, 1.5, g);
+  }
+  return g;
+}
+
+function bPower(C, lvl) {
+  const g = new THREE.Group();
+  const pts = [];
+  for (let i = 0; i <= 10; i++) { const y = i / 10; pts.push(new THREE.Vector2(1.25 - Math.sin(y * Math.PI) * 0.45 + y * 0.1, y * 4)); }
+  const towerGeo = geo('cooltower', () => new THREE.LatheGeometry(pts, 16));
+  const n = lvl;
+  g.userData.chimneys = [];
+  for (let k = 0; k < n; k++) {
+    const x = -2.4 + k * 2.4;
+    m(towerGeo, mat(0xc8c4bc, { side: THREE.DoubleSide }), x, 0, -0.6, g);
+    g.userData.chimneys.push(new THREE.Vector3(x, 4.2, -0.6));
+  }
+  m(box(2.2, 1.4, 1.4), mat(0x6a7a8a), 2.4, 0.7, 1.2, g);
+  for (let i = 0; i < 3; i++) m(cyl(0.06, 0.06, 2.4, 5), mat(0x444444), 0.6 + i * 0.6, 1.2, 1.6, g);
+  m(box(2.8, 0.08, 0.08), mat(0x222222), 1.2, 2.3, 1.6, g);
+  void C;
+  return g;
+}
+
+function bHospital(C, lvl) {
+  const g = new THREE.Group();
+  const white = mat(0xeeeeea, { map: tex('tex_concrete', 1) });
+  m(box(4.6, 2.2, 2.8), white, -0.4, 1.1, -0.4, g);
+  windows(g, 4.6, 1, 1.02, 0.7, 2, 6);
+  m(box(1.2, 0.3, 0.08), mat(0x2fbf4a), -0.4, 2.0, 1.04, g);
+  m(box(0.3, 1.2, 0.08), mat(0x2fbf4a), -0.4, 2.0, 1.04, g);
+  if (lvl >= 2) { m(box(2.2, 1.6, 2.2), white, 2.8, 0.8, -0.6, g); windows(g, 2.2, 1, 0.52, 0.6, 1, 2); }
+  if (lvl >= 3) {
+    m(cyl(1.0, 1.0, 0.08, 16), mat(0x444444), -0.4, 2.25, -0.4, g);
+    m(box(0.9, 0.1, 0.12), mat(0xffffff), -0.4, 2.3, -0.4, g);
+  }
+  // ambulance
+  m(box(1.4, 0.7, 0.7), mat(0xffffff), 2.3, 0.45, 1.8, g);
+  m(box(0.06, 0.3, 0.3), mat(0x2fbf4a), 2.3, 0.6, 2.16, g);
+  void C;
+  return g;
+}
+
+function bAirbase(C, lvl) {
+  const g = new THREE.Group();
+  m(box(7.6, 0.06, 1.4), mat(0x3a3a3a), 0, 0.03, 1.4, g);
+  for (let x = -3.4; x <= 3.4; x += 0.9) m(box(0.45, 0.07, 0.1), mat(0xffffff), x, 0.05, 1.4, g);
+  const hang = m(halfCyl(1.4, 3.2, 12), mat(0x6a7a6a, { map: tex('tex_metal', 1) }), -1.8, 0, -1.0, g);
+  hang.rotation.set(0, 0, Math.PI / 2);
+  const jet = new THREE.Group();
+  m(cone(0.25, 2.2, 6), mat(0x7d8a92), 0, 0, 0, jet, 0, 0, -Math.PI / 2);
+  m(box(0.6, 0.06, 2.0), mat(0x6d7a82), -0.1, 0, 0, jet);
+  m(box(0.3, 0.5, 0.05), mat(0x6d7a82), -0.9, 0.25, 0, jet);
+  jet.position.set(1.6, 0.35, 1.4);
+  g.add(jet);
+  if (lvl >= 2) { const j2 = jet.clone(); j2.position.set(-2.6, 0.35, 1.4); g.add(j2); }
+  if (lvl >= 3) { m(box(0.8, 3, 0.8), mat(0xc8c0b0), 2.8, 1.5, -1.2, g); m(box(1.2, 0.7, 1.2), mat(0x88aacc, { transparent: true, opacity: 0.7 }), 2.8, 3.3, -1.2, g); }
+  void C;
+  return g;
+}
+
+function bIntel(C, lvl) {
+  const g = new THREE.Group();
+  m(box(3.4, 1.8, 2.4), mat(0x6a6a5a, { map: tex('tex_concrete', 1) }), -1, 0.9, -0.4, g);
+  windows(g, 3.4, 1, 0.82, 0.8, 1, 4);
+  g.userData.dishes = [];
+  for (let k = 0; k < lvl; k++) {
+    const x = 1.6 + (k % 2) * 1.6, z = -0.8 + Math.floor(k / 2) * 1.8;
+    m(cyl(0.08, 0.1, 1.6, 6), mat(0x555555), x, 0.8, z, g);
+    const dish = new THREE.Group();
+    dish.position.set(x, 1.7, z);
+    g.add(dish);
+    m(cyl(0.75, 0.25, 0.18, 14), mat(0xd8dcd0), 0, 0, 0, dish, 0, 0, Math.PI / 2.6);
+    dish.userData.dynamic = true;
+    g.userData.dishes.push(dish);
+  }
+  for (let i = 0; i < 2; i++) m(cyl(0.03, 0.03, 3, 4), mat(0x333333), -2.2 + i * 2, 3.3, -1.2, g);
+  void C;
+  return g;
+}
+
+function bAA(C, lvl) {
+  const g = new THREE.Group();
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2;
+    m(box(0.7, 0.4, 0.4), mat(i % 2 ? KHAKI : 0x7d7150), Math.cos(a) * 2.6, 0.2, Math.sin(a) * 1.8, g, 0, -a, 0);
+  }
+  for (let k = 0; k < lvl; k++) {
+    const gun = aaGun(C.side);
+    gun.scale.setScalar(0.5);
+    gun.position.set(-1.6 + k * 1.6, 0, 0);
+    g.add(gun);
+  }
+  return g;
+}
+
+function bBank(C, lvl) {
+  const g = new THREE.Group();
+  const stone = mat(0xe0d6c0, { map: tex('tex_concrete', 1) });
+  m(box(5, 0.4, 3.2), stone, 0, 0.2, -0.2, g);
+  m(box(4.4, 2.2, 2.4), stone, 0, 1.5, -0.5, g);
+  for (let i = 0; i < 6; i++) m(cyl(0.16, 0.18, 2.2, 10), mat(0xf2ead8), -2 + i * 0.8, 1.5, 1.0, g);
+  const ped = m(cyl(0.01, 1.2, 4.8, 3), stone, 0, 3.0, 0.4, g, 0, 0, Math.PI / 2);
+  ped.scale.set(1, 1, 0.35);
+  ped.rotation.set(0, Math.PI / 2, Math.PI / 2);
+  if (lvl >= 2) m(box(1.2, 0.6, 0.06), mat(0xfee761, { emissive: 0x6a5010 }), 0, 2.9, 1.06, g);
+  if (lvl >= 3) m(sph(1.0, 14), mat(0xd9a32b, { emissive: 0x3a2a00 }), 0, 2.8, -0.6, g).scale.set(1, 0.8, 1);
+  void C;
+  return g;
+}
+
+function bAcademy(C, lvl) {
+  const g = new THREE.Group();
+  const wall = mat(0xc8a888, { map: tex('tex_brick', 1) });
+  m(box(3.6, 2.6, 2.6), wall, 0, 1.3, -0.4, g);
+  windows(g, 3.6, 1.1, 0.92, 0.8, 2, 4);
+  m(sph(1.0, 14), mat(0x6a8a5a), 0, 2.7, -0.4, g).scale.set(1, 0.8, 1);
+  m(cyl(0.04, 0.04, 1.6, 5), mat(0xcccccc), 0, 3.9, -0.4, g);
+  const flag = m(box(0.7, 0.45, 0.04), mat(C.main), 0.36, 4.4, -0.4, g);
+  flag.userData.dynamic = true;
+  g.userData.flag = flag;
+  if (lvl >= 2) { m(box(1.6, 1.8, 2.2), wall, -2.7, 0.9, -0.6, g); m(box(1.6, 1.8, 2.2), wall, 2.7, 0.9, -0.6, g); }
+  if (lvl >= 3) m(box(5.8, 0.05, 1.2), mat(0x9a9a8a), 0, 0.03, 1.6, g);
+  return g;
+}
+
+function bDepot(C, lvl) {
+  const g = new THREE.Group();
+  const shed = m(halfCyl(1.8, 6, 12, true), mat(0x8a6a4a, { side: THREE.DoubleSide, map: tex('tex_roof', 1) }), 0, 0.2, -0.4, g);
+  shed.rotation.set(0, 0, Math.PI / 2);
+  for (const off of [-0.35, 0.35]) m(box(7.6, 0.08, 0.08), mat(0x9a9a9a), 0, 0.1, -0.4 + off, g);
+  const loco = train(C.side);
+  loco.scale.setScalar(0.55);
+  loco.position.set(1.2, 0, -0.4);
+  g.add(loco);
+  if (lvl >= 2) { for (const off of [-0.35, 0.35]) m(box(7.6, 0.08, 0.08), mat(0x9a9a9a), 0, 0.1, 1.6 + off, g); m(box(2.4, 1.0, 0.9), mat(0x55603d), -1.5, 0.7, 1.6, g); }
+  if (lvl >= 3) { m(cyl(0.7, 0.7, 1.2, 10), mat(0x7a5a3a), 3.2, 3.0, 1.2, g); for (const dx of [-0.4, 0.4]) m(box(0.1, 2.4, 0.1), mat(0x5a4a3a), 3.2 + dx, 1.2, 1.2, g); }
+  return g;
+}
+
+function bScaffold(C, lvl) {
+  const g = new THREE.Group();
+  const pole = mat(0xb08a50);
+  const h = 2 + lvl;
+  for (let x = -2.4; x <= 2.41; x += 1.2) for (const z of [-1.4, 1.4]) m(box(0.08, h, 0.08), pole, x, h / 2, z, g);
+  for (let y = 1; y < h; y += 1) { m(box(5, 0.08, 0.08), pole, 0, y, 1.4, g); m(box(5, 0.08, 0.08), pole, 0, y, -1.4, g); }
+  m(box(4.4, h * 0.45, 2.4), mat(0x9a9488, { map: tex('tex_concrete', 1) }), 0, h * 0.22, 0, g);
+  // crane
+  m(box(0.2, h + 3, 0.2), mat(0xd9a32b), 3.2, (h + 3) / 2, -1, g);
+  const jib = new THREE.Group();
+  jib.position.set(3.2, h + 3, -1);
+  g.add(jib);
+  m(box(5, 0.2, 0.2), mat(0xd9a32b), -2, 0, 0, jib);
+  m(box(0.04, 1.6, 0.04), mat(0x333333), -3.8, -0.8, 0, jib);
+  jib.userData.dynamic = true;
+  g.userData.jib = jib;
+  void C;
+  return g;
+}
+
+const BUILDERS = { factory: bFactory, housing: bHousing, barracks: bBarracks, tankworks: bTankworks, power: bPower, hospital: bHospital,
+  airbase: bAirbase, intel: bIntel, aasite: bAA, bank: bBank, academy: bAcademy, depot: bDepot };
+
+export function makeBuilding(type, lvl, side, constructing) {
+  const C = { ...TEAM_COLORS[side], side };
+  const g = constructing ? bScaffold(C, lvl) : (BUILDERS[type] || bFactory)(C, lvl);
+  g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  flatten(g, new Set([g.userData.jib, ...(g.userData.dishes || [])].filter(Boolean)));
+  return g;
+}
+
+export function setNightWindows(on) {
+  const w = winMat();
+  w.emissive.setHex(on ? 0xffb040 : 0x7a5a20);
 }

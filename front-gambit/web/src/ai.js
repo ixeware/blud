@@ -1,8 +1,9 @@
 // Board-level AI commander (also drives the neutral rebel faction).
 import {
-  other, rc, sq, inB, cheb, pieceMoves, legalMovesFor, shopTargets, canBuy, territory, supplyMap, duelSupport,
-  apply, abilityList, b2Available, unitDef, around, SHOP,
+  other, rc, sq, inB, cheb, pieceMoves, legalMovesFor, shopTargets, canBuy, territory, supplyMap,
+  apply, abilityList, b2Available, unitDef, around, SHOP, duelOdds, inCheck, generalSquare, armyCap, armySize,
 } from './rules.js';
+import { aiCityChoice, cityScore } from './city.js';
 import { CARDS, cardTargets } from './cards.js';
 import { ABILITIES } from './abilities.js';
 
@@ -23,10 +24,11 @@ function evaluate(s, side) {
   });
   const terr = territory(s);
   const opp = side === 'n' ? null : other(side);
+  if (opp && inCheck(s, side)) e -= 35;
   if (opp) {
     e += (terr.filter((o) => o === side).length - terr.filter((o) => o === opp).length) * 0.4;
     e += (s.money[side] - s.money[opp]) * 0.03;
-    e += (s.factories[side].length - s.factories[opp].length) * 6;
+    e += (cityScore(s, side) - cityScore(s, opp)) * 1.2;
     for (let i = 0; i < 64; i++) if (s.rails[i] === side) e += 0.3;
   }
   return e;
@@ -58,13 +60,15 @@ function threatMap(s, side) {
   return t;
 }
 
-const POWER = { P: 1, N: 1.25, B: 1.1, R: 1.6, Q: 1.8, K: 1.0, M: 0.9, E: 1.0, A: 1.4, L: 1.3, T: 1.7, D: 1.3, C: 1.3 };
-function winProb(s, from, to, sup) {
-  const a = s.board[from], d = s.board[to];
-  const sa = a.s === 'n' || sup[a.s][from], sd = d.s === 'n' || sup[d.s][to];
-  const pa = a.hp * (POWER[a.t] || 1) * (sa ? 1 : 0.75) * (1 + 0.25 * duelSupport(s, to, a.s, from)) * (1 + 0.08 * a.rank);
-  const pd = d.hp * (POWER[d.t] || 1) * (sd ? 1 : 0.75) * (d.dug ? 1.5 : 1) * (1 + 0.25 * duelSupport(s, to, d.s, to)) * 1.1 * (1 + 0.08 * d.rank);
-  return pa / (pa + pd);
+function winProb(s, from, to, sup) { return duelOdds(s, from, to, sup); }
+
+// would the general of `side` be attacked after moving from -> to (non-capture)?
+function exposesGeneral(s, side, from, to) {
+  const a = s.board[from], b = s.board[to];
+  s.board[to] = a; s.board[from] = null;
+  const r = inCheck(s, side);
+  s.board[from] = a; s.board[to] = b;
+  return r;
 }
 
 const turnBuys = { key: '', n: 0 };
@@ -101,9 +105,10 @@ export function aiChoose(s, side, difficulty = 1) {
     const count = (t) => pieces.filter((i) => s.board[i].t === t).length;
     const pick = (item) => { const t = shopTargets(s, side, item); return t && t.length ? t.sort((x, y) => enemyThreat[x] - enemyThreat[y])[0] : null; };
     let b = null;
-    if (!b && s.factories[side].length < 3 && money >= 140 && s.turnNo <= 20) b = tryBuy('factory');
+    const city = aiCityChoice(s, side);
+    if (city) { turnBuys.n++; return city; }
     if (!b && s.stats[en].drones > 0 && !s.ew[side] && money >= 90) b = tryBuy('ew');
-    if (!b && count('P') < 4 && money >= 60) b = tryBuy('pawn', pick('pawn'));
+    if (!b && count('P') < 4 && money >= 60 && armySize(s, side) < armyCap(s, side)) b = tryBuy('pawn', pick('pawn'));
     if (!b && count('M') < 1 && s.turnNo > 6 && money >= 110) b = tryBuy('medic', pick('medic'));
     if (!b && count('A') < 1 && (s.stats[en].drones > 1 || enemies.some((i) => s.board[i].t === 'Q')) && money >= 170 && s.turnNo > 8) b = tryBuy('aa', pick('aa'));
     if (!b && count('L') < 1 && money >= 230 && s.turnNo > 10) b = tryBuy('mlrs', pick('mlrs'));
@@ -117,7 +122,7 @@ export function aiChoose(s, side, difficulty = 1) {
         if (!canBuy(s, side, item)) b = tryBuy(item, pick('pawn'));
       }
     }
-    if (!b && money >= 230 && s.factories[en].length > 1 && Math.random() < 0.3) b = tryBuy('sabotage', null, 'factory');
+    if (!b && money >= 230 && s.city[en].filter((x) => x).length > 2 && Math.random() < 0.3) b = tryBuy('sabotage', null, 'factory');
     if (!b && money >= 200 && Math.random() < 0.25) {
       const t = (shopTargets(s, side, 'mine') || []).filter((i) => { const [r] = rc(i); return side === 'w' ? r >= 2 && r <= 4 : r >= 3 && r <= 5; });
       if (t.length) b = tryBuy('mine', t[Math.floor(Math.random() * t.length)]);
@@ -142,6 +147,8 @@ export function aiChoose(s, side, difficulty = 1) {
 
   // ---- moves ----
   const enemyKing = s.board.findIndex((p) => p && p.s === en && p.t === 'K');
+  const myKing = generalSquare(s, side);
+  const checked = inCheck(s, side);
   for (const from of pieces) {
     const p = s.board[from];
     const v = val(s, p);
@@ -153,6 +160,9 @@ export function aiChoose(s, side, difficulty = 1) {
         const wp = winProb(s, from, m.to, sup);
         sc += wp * val(s, d) * 10 - (1 - wp) * v * 10 + 6 + Math.min(8, s.turnNo / 5);
         if (d.t === 'K') sc += wp * 60;
+        // the general only attacks when it is nearly a sure thing — losing him loses the war
+        if (p.t === 'K') sc -= (1 - wp) * 400 + (wp < 0.85 ? 120 : 0);
+        if (checked && d && d.s !== side && pieceMoves(s, m.to).some((x) => x.to === myKing && x.capture)) sc += 40 * wp;
       } else {
         const [r, c] = rc(m.to);
         const adv = side === 'w' ? r : 7 - r;
@@ -167,6 +177,13 @@ export function aiChoose(s, side, difficulty = 1) {
         if (s.sqfx[m.to] && (s.sqfx[m.to].fire || s.sqfx[m.to].gas)) sc -= 4;
       }
       if (enemyThreat[m.to] > 0) sc -= v * 10 * (ownThreat[m.to] > 0 ? 0.25 : 0.55);
+      if (!m.capture) {
+        const exposed = exposesGeneral(s, side, from, m.to);
+        if (p.t === 'K' && exposed) sc -= 150;
+        else if (exposed && !checked) sc -= 60;
+        if (checked && !exposed) sc += 45;
+        if (checked && exposed) sc -= 50;
+      }
       if (threatenedNow && enemyThreat[m.to] === 0) sc += v * 10 * 0.45;
       cands.push({ sc: sc + 1.5 + R(), cmd: { c: 'move', from, to: m.to } });
     }

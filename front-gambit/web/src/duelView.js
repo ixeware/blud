@@ -1,8 +1,9 @@
 // 3D view of a real-time duel arena.
 import * as THREE from 'three';
-import { unitModel, makeObstacle, makeTree, TEAM_COLORS, mat, tex } from './models.js';
+import { unitModel, makeObstacle, makeForest, TEAM_COLORS, mat, tex } from './models.js';
 import { FX } from './fx.js';
-import { genArena, ARENA } from './duel.js';
+import { genArena, ARENA, rtHasTrain } from './duel.js';
+import { makeSky, applyLights, makeClouds, scatterGrass, scatterRocks, makeBlob, updateWind } from './world.js';
 
 const THEME = {
   field: { ground: 'tex_grass', tint: 0x86a066, sky: 0xa8cde0, dirt: 0x6b5a3c },
@@ -30,22 +31,27 @@ export class DuelView {
     this.localTeam = localTeam;
     this.sound = sound || (() => {});
     this.customDefs = customDefs;
-    const hasTrain = rt.att.t === 'T' || rt.def.t === 'T';
+    const hasTrain = rtHasTrain(rt);
     const arena = genArena(rt.seed, { urban: rt.urban, train: hasTrain });
     this.theme = arena.theme;
     const T = THEME[arena.theme];
     const s = new THREE.Scene();
     this.scene = s;
     const night = !!rt.night;
-    s.background = new THREE.Color(night ? 0x0b1020 : T.sky);
-    s.fog = new THREE.Fog(s.background, night ? 20 : 40, night ? 60 : 90);
-    s.add(new THREE.HemisphereLight(night ? 0x405080 : 0xffffff, 0x332211, night ? 0.35 : 1.0));
-    const sun = new THREE.DirectionalLight(night ? 0x8090ff : 0xfff0d0, night ? 0.35 : 1.7);
-    sun.position.set(-12, 30, 10);
+    const preset = night ? 'night' : arena.theme === 'city' || arena.theme === 'winter' ? 'overcast' : rt.seed % 3 === 0 ? 'sunset' : 'day';
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x332211, 1);
+    s.add(hemi);
+    const sun = new THREE.DirectionalLight(0xfff0d0, 1.7);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024);
-    Object.assign(sun.shadow.camera, { left: -26, right: 26, top: 18, bottom: -18, near: 1, far: 80 });
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.bias = -0.0004;
+    Object.assign(sun.shadow.camera, { left: -30, right: 30, top: 22, bottom: -22, near: 1, far: 120 });
     s.add(sun);
+    applyLights(s, hemi, sun, preset);
+    sun.position.multiplyScalar(1.1);
+    s.add(makeSky(preset));
+    this.clouds = makeClouds(10, 120, 40, preset !== 'day' && preset !== 'sunset');
+    s.add(this.clouds);
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(ARENA.w + 60, ARENA.d + 60), mat(T.tint, { map: tex(T.ground, 12) }));
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
@@ -102,18 +108,24 @@ export class DuelView {
         s.add(l);
       }
     }
+    const inArena = (x, z) => Math.abs(x) < ARENA.w / 2 + 0.6 && Math.abs(z) < ARENA.d / 2 + 0.6;
+    if (arena.theme !== 'city') {
+      const gcol = arena.theme === 'desert' ? 0xa89050 : arena.theme === 'ruins' ? 0x7a8a5a : 0x6f9a3e;
+      // grass only where it makes sense: a few tufts inside green arenas, a meadow outside the fence
+      if (arena.theme === 'field' || arena.theme === 'ruins') s.add(scatterGrass({ count: 260, area: ARENA.w / 2 - 1, color: gcol, heightAt: () => 0, scale: 0.75, avoid: (x, z) => this.obsHit(arena.obs, x, z) }));
+      if (arena.theme !== 'winter') s.add(scatterGrass({ count: arena.theme === 'desert' ? 500 : 1500, area: ARENA.w / 2 + 26, color: gcol, heightAt: () => 0, scale: 1.2, avoid: (x, z) => inArena(x, z) }));
+      s.add(scatterRocks({ count: 26, area: ARENA.w / 2 + 24, avoid: (x, z) => inArena(x, z), heightAt: () => 0, color: arena.theme === 'desert' ? 0xb09a70 : arena.theme === 'winter' ? 0xc8d0d4 : 0x8a8680 }));
+    }
+    const forest = [];
     for (const d of arena.deco) {
       if (arena.theme === 'city') {
         const h = 6 + Math.random() * 8;
         const b = new THREE.Mesh(new THREE.BoxGeometry(5, h, 4), mat(0xffffff, { map: tex('tex_brick', 2) }));
         b.position.set(d.x, h / 2, d.z + Math.sign(d.z) * 3);
         s.add(b);
-      } else {
-        const t = makeTree(d.s * 1.3, arena.theme === 'winter', arena.theme === 'desert');
-        t.position.set(d.x, 0, d.z);
-        s.add(t);
-      }
+      } else forest.push({ x: d.x, y: 0, z: d.z, s: d.s * 1.3 });
     }
+    if (forest.length) s.add(makeForest(forest, arena.theme === 'winter' ? 'snow' : arena.theme === 'desert' ? 'dry' : 'green'));
     this.fx = new FX(s);
     this.units = new Map();
     this.objMeshes = new Map();
@@ -135,6 +147,11 @@ export class DuelView {
 
   side(team) { return this.rt[team].s; }
 
+  obsHit(obs, x, z) {
+    for (const o of obs) if (Math.abs(x - o.x) < o.w / 2 + 0.6 && Math.abs(z - o.z) < o.d / 2 + 0.6) return true;
+    return false;
+  }
+
   hpSprite(e, hp, maxHp, main) {
     const key = Math.ceil(hp) + '/' + maxHp;
     if (e.hpKey === key) return;
@@ -153,15 +170,14 @@ export class DuelView {
       e.hpTex = new THREE.CanvasTexture(c);
       e.hpTex.magFilter = THREE.NearestFilter;
       e.hpSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: e.hpTex, depthTest: false }));
-      e.hpSprite.scale.set(main ? 2.6 : 1.6, main ? 0.33 : 0.2, 1);
+      e.hpSprite.scale.set(main ? 2.6 : e.isSup ? 2.0 : 1.6, main ? 0.33 : e.isSup ? 0.26 : 0.2, 1);
       e.hpSprite.renderOrder = 5;
       this.scene.add(e.hpSprite);
     } else e.hpTex.needsUpdate = true;
   }
 
-  modelFor(kind, team) {
-    const f = this.rt[team];
-    if (kind === 'C' || (kind === f.t && f.t === 'C')) return unitModel('C', this.side(team), 'duel', this.customDefs[f.cid]);
+  modelFor(kind, team, cid) {
+    if (kind === 'C') return unitModel('C', this.side(team), 'duel', this.customDefs[cid || this.rt[team].cid]);
     return unitModel(kind, this.side(team), 'duel');
   }
 
@@ -169,22 +185,25 @@ export class DuelView {
     this.snap = snap;
     this.interp = interpolate;
     for (const u of snap.u) {
-      const [id, kind, team, x, z, aim, hp, maxHp, alive, body, moving, , main, , , reloading, flags] = u;
+      const [id, kind, team, x, z, aim, hp, maxHp, alive, body, moving, , main, , , reloading, flags, cid, isSup] = u;
       let e = this.units.get(id);
       if (!e) {
-        const model = this.modelFor(kind, team);
-        const big = ['R', 'Q', 'A', 'L', 'T'].includes(kind) || (kind === 'C' && this.rt[team].vehicle);
+        const model = this.modelFor(kind, team, cid);
+        const cdef = kind === 'C' ? this.customDefs[cid || this.rt[team].cid] : null;
+        const big = ['R', 'Q', 'A', 'L', 'T'].includes(kind) || (cdef && cdef.vehicle);
         model.scale.setScalar(big ? 1 : kind === 'U' ? 1.2 : 1.25);
         model.traverse((c) => { if (c.isMesh) c.castShadow = true; });
         this.scene.add(model);
         e = { model, kind, team, x, z, tx: x, tz: z, aim, body, alive: true, walk: 0, recoil: 0 };
         const rr = big ? 1.8 : 0.85;
         const ring = new THREE.Mesh(new THREE.RingGeometry(rr, rr + 0.2, 24),
-          new THREE.MeshBasicMaterial({ color: TEAM_COLORS[this.side(team)].main, side: THREE.DoubleSide, transparent: true, opacity: main ? 0.9 : 0.45 }));
+          new THREE.MeshBasicMaterial({ color: isSup ? 0xfee761 : TEAM_COLORS[this.side(team)].main, side: THREE.DoubleSide, transparent: true, opacity: main ? 0.9 : isSup ? 0.75 : 0.45 }));
         ring.rotation.x = -Math.PI / 2;
         ring.position.set(x, 0.05, z);
         this.scene.add(ring);
         e.ring = ring;
+        e.blob = makeBlob(big ? 4.2 : 1.6);
+        this.scene.add(e.blob);
         if (this.night && main) {
           const fl = new THREE.SpotLight(0xfff2c0, 30, 18, 0.5, 0.5);
           fl.position.set(0, 1.6, 0);
@@ -198,6 +217,7 @@ export class DuelView {
       e.tx = x; e.tz = z; e.aim = aim; e.body = body; e.moving = moving; e.flags = flags; e.reloading = reloading;
       if (!interpolate) { e.x = x; e.z = z; }
       e.main = main;
+      e.isSup = isSup;
       if (e.alive && !alive) { e.alive = false; e.deathT = 0; if (e.hpSprite) e.hpSprite.visible = false; }
       if (alive) this.hpSprite(e, hp, maxHp, main);
     }
@@ -336,6 +356,7 @@ export class DuelView {
       const m = e.model;
       m.position.x = e.x; m.position.z = e.z;
       if (e.ring) e.ring.position.set(e.x, 0.05, e.z);
+      if (e.blob) e.blob.position.set(e.x, 0.04, e.z);
       const ud = m.userData;
       e.recoil = Math.max(0, (e.recoil || 0) - dt * 6);
       if (ud.body && !ud.bob) {
@@ -415,6 +436,9 @@ export class DuelView {
       this.reticle.visible = true;
       this.reticle.position.set(lu.x + Math.cos(lu.aim) * len, 0.08, lu.z + Math.sin(lu.aim) * len);
     } else { this.laser.visible = false; this.reticle.visible = false; }
+    updateWind(this.time);
+    if (this.clouds) this.clouds.userData.update(dt);
+    if (Math.random() < dt * 6) for (const [, e] of this.units) if (e.alive && e.moving && ['R', 'A', 'L', 'T'].includes(e.kind)) this.fx.dust(e.x, e.z, this.theme === 'winter' ? 0xe8eef2 : 0x9a8a70);
     this.fx.update(dt);
   }
 

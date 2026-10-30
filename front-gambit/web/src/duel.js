@@ -130,14 +130,24 @@ function segCircle(x1, z1, x2, z2, cx, cz, r) {
 }
 
 const BLOCKS_LOS = new Set(['wall', 'crate', 'house', 'car', 'barrel']);
+const VEH_PASS = new Set(['crate', 'sandbag', 'barrel', 'car']);
+
+export function rtHasTrain(rt) {
+  return [rt.att, rt.def].some((f) => f.t === 'T' || (f.sup || []).some((x) => x.t === 'T'));
+}
+
+// coarse navigation grid used by bots to path around walls and houses
+const CELL = 1;
+const GW = Math.ceil(ARENA.w / CELL), GH = Math.ceil(ARENA.d / CELL);
+const cellOf = (x, z) => [Math.max(0, Math.min(GW - 1, Math.floor((x + HW) / CELL))), Math.max(0, Math.min(GH - 1, Math.floor((z + HD) / CELL)))];
+const cellCenter = (cx, cz) => [(cx + 0.5) * CELL - HW, (cz + 0.5) * CELL - HD];
 
 export class DuelSim {
   constructor(rt, opts) {
     this.rt = rt;
     this.opts = opts; // { ctrl: {att, def}, difficulty: 0..2 }
     this.R = rng(rt.seed ^ 0x9e3779b9);
-    const hasTrain = rt.att.t === 'T' || rt.def.t === 'T';
-    const a = genArena(rt.seed, { urban: rt.urban, train: hasTrain });
+    const a = genArena(rt.seed, { urban: rt.urban, train: rtHasTrain(rt) });
     this.theme = a.theme;
     this.obs = a.obs;
     this.time = DUEL_TIME;
@@ -160,20 +170,44 @@ export class DuelSim {
       speed: [0.8, 0.9, 1.0][d],
       lead: d > 0,
     };
-    const att = this.addMain(rt.att, 'att', -HW + 4, 0);
-    const def = this.addMain(rt.def, 'def', HW - 4, 0);
+    this.nav = { dirty: true, grids: {}, fields: new Map() };
+    const att = this.addMain(rt.att, 'att', -HW + 4, 0, true);
+    const def = this.addMain(rt.def, 'def', HW - 4, 0, true);
     def.aim = Math.PI; def.body = Math.PI;
     if (rt.def.dug) def.takeMul *= 0.65;
     if (rt.def.smoke || rt.def.bld) def.takeMul *= 0.8;
     this.main = { att, def };
-    for (let i = 0; i < rt.att.allies; i++) this.addUnit('S', 'att', -HW + 3, i ? 4 : -4, 90, 90, false, 'rifle');
-    for (let i = 0; i < rt.def.allies; i++) this.addUnit('S', 'def', HW - 3, i ? 4 : -4, 90, 90, false, 'rifle');
+    // pieces protecting / attacking the square join the fight with their own weapons
+    const slots = [[-3, -6], [-5, 6], [-2, -10], [-6, 10]];
+    for (const team of ['att', 'def']) {
+      (rt[team].sup || []).forEach((f, idx) => {
+        const [dx, dz] = slots[idx % slots.length];
+        const x = team === 'att' ? -HW + 4 + dx * -1 - 2 : HW - 4 + dx;
+        const z = f.t === 'T' ? 0 : dz;
+        const u = this.addMain(f, team, f.t === 'T' ? (team === 'att' ? -HW + 9 + idx : HW - 9 - idx) : x, z, false);
+        u.supIdx = idx;
+        u.aim = u.body = team === 'att' ? 0 : Math.PI;
+      });
+    }
+    for (const u of this.units) this.placeFree(u);
   }
 
-  addMain(f, team, x, z) {
+  placeFree(u) {
+    if (!this.blocked(u.x, u.z, u.r, u)) return;
+    for (let rad = 1; rad < 14; rad += 0.7) {
+      for (let k = 0; k < 16; k++) {
+        const a = (k / 16) * Math.PI * 2;
+        const x = u.x + Math.cos(a) * rad, z = u.rail ? u.z : u.z + Math.sin(a) * rad;
+        if (!this.blocked(x, z, u.r, u)) { u.x = x; u.z = z; u.railZ = z; return; }
+      }
+    }
+  }
+
+  addMain(f, team, x, z, isMain = true) {
     const mul = HP_MUL[f.t] || 1.6;
-    const u = this.addUnit(f.t, team, x, z, f.hp * mul, f.maxHp * mul, true, f.weapon || 'rifle', f.duel);
+    const u = this.addUnit(f.t, team, x, z, f.hp * mul, f.maxHp * mul, isMain, f.weapon || 'rifle', f.duel);
     u.hpMul = mul;
+    u.cid = f.cid || '';
     if (f.t === 'C') {
       u.air = !!f.air; u.vehicle = !!f.vehicle;
       u.r = f.vehicle ? 1.35 : 0.55;
@@ -261,6 +295,7 @@ export class DuelSim {
     if (o.kind === 'wall' || o.kind === 'sandbag' || o.hp <= 0) return;
     o.hp -= dmg;
     if (o.hp <= 0) {
+      this.nav.dirty = true;
       this.destroyed.push(o.id);
       this.events.push({ k: o.kind === 'house' ? 'collapse' : 'debris', x: o.x, z: o.z, kind: o.kind, id: o.id });
       if (o.kind === 'barrel' || o.kind === 'car') this.explode(o.x, o.z, 3.5, 60, null);
@@ -413,6 +448,70 @@ export class DuelSim {
     }
   }
 
+  navGrid(veh) {
+    const key = veh ? 'veh' : 'inf';
+    if (this.nav.dirty) { this.nav.grids = {}; this.nav.fields.clear(); this.nav.dirty = false; }
+    if (this.nav.grids[key]) return this.nav.grids[key];
+    const g = new Uint8Array(GW * GH);
+    const r = veh ? 1.5 : 0.65;
+    for (let cz = 0; cz < GH; cz++) for (let cx = 0; cx < GW; cx++) {
+      const [x, z] = cellCenter(cx, cz);
+      if (Math.abs(x) > HW - r || Math.abs(z) > HD - r) { g[cz * GW + cx] = 1; continue; }
+      for (const o of this.obs) {
+        if (o.hp <= 0 || (veh && VEH_PASS.has(o.kind))) continue;
+        if (Math.abs(x - o.x) < o.w / 2 + r && Math.abs(z - o.z) < o.d / 2 + r) { g[cz * GW + cx] = 1; break; }
+      }
+    }
+    this.nav.grids[key] = g;
+    return g;
+  }
+
+  // BFS distance field toward a target cell (cached per target cell for a short time)
+  navField(veh, tx, tz) {
+    const [gx, gz] = cellOf(tx, tz);
+    const key = (veh ? 'v' : 'i') + gx + ',' + gz;
+    const c = this.nav.fields.get(key);
+    if (c && this.time - c.t > -0.6 && c.t - this.time < 0.6) return c.d;
+    const g = this.navGrid(veh);
+    const d = new Int16Array(GW * GH).fill(-1);
+    const q = [gz * GW + gx];
+    d[q[0]] = 0;
+    for (let h = 0; h < q.length; h++) {
+      const i = q[h], cx = i % GW, cz = (i / GW) | 0;
+      for (const [ox, oz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = cx + ox, nz = cz + oz;
+        if (nx < 0 || nz < 0 || nx >= GW || nz >= GH) continue;
+        const j = nz * GW + nx;
+        if (d[j] >= 0 || g[j]) continue;
+        d[j] = d[i] + 1;
+        q.push(j);
+      }
+    }
+    this.nav.fields.set(key, { d, t: this.time });
+    if (this.nav.fields.size > 40) this.nav.fields.delete(this.nav.fields.keys().next().value);
+    return d;
+  }
+
+  // direction (angle) to walk from u toward (tx, tz) following the distance field
+  pathDir(u, tx, tz) {
+    const d = this.navField(u.vehicle, tx, tz);
+    const [cx, cz] = cellOf(u.x, u.z);
+    let best = null, bv = d[cz * GW + cx] >= 0 ? d[cz * GW + cx] : 1e9;
+    for (let oz = -1; oz <= 1; oz++) for (let ox = -1; ox <= 1; ox++) {
+      if (!ox && !oz) continue;
+      const nx = cx + ox, nz = cz + oz;
+      if (nx < 0 || nz < 0 || nx >= GW || nz >= GH) continue;
+      const v = d[nz * GW + nx];
+      if (v < 0) continue;
+      // diagonal steps only if both orthogonal neighbours are open (no corner cutting)
+      if (ox && oz && (d[cz * GW + nx] < 0 || d[nz * GW + cx] < 0)) continue;
+      if (v < bv) { bv = v; best = [nx, nz]; }
+    }
+    if (!best) return null;
+    const [x, z] = cellCenter(best[0], best[1]);
+    return Math.atan2(z - u.z, x - u.x);
+  }
+
   aiInput(u, dt) {
     const en = this.enemiesOf(u);
     const inp = { mx: 0, mz: 0, ax: Math.cos(u.aim), az: Math.sin(u.aim), fire: false, ab: false };
@@ -433,7 +532,9 @@ export class DuelSim {
     if (u.speed > 0) {
       let want;
       const toT = Math.atan2(dz, dx);
-      if (!vis) want = toT + ai.strafe * 0.5;
+      const path = !u.air && (!vis || dist > u.pref + 2) ? this.pathDir(u, t.x, t.z) : null;
+      if (path !== null) want = path + (vis ? ai.strafe * 0.25 : 0);
+      else if (!vis) want = toT + ai.strafe * 0.5;
       else if (dist > u.pref + 2) want = toT + ai.strafe * 0.35;
       else if (dist < u.pref - 3) want = toT + Math.PI + ai.strafe * 0.4;
       else want = toT + ai.strafe * Math.PI / 2;
@@ -443,6 +544,20 @@ export class DuelSim {
         let sc = Math.cos(a - want);
         if (this.blocked(u.x + Math.cos(a) * 1.8, u.z + Math.sin(a) * 1.8, u.r, u)) sc -= 3;
         if (sc > bestS) { bestS = sc; bestA = a; }
+      }
+      // stuck detection: no progress for a second while trying to move -> wriggle out
+      ai.chkT = (ai.chkT || 0) + dt;
+      if (ai.chkT > 1.0) {
+        const moved = Math.hypot(u.x - (ai.lx ?? u.x), u.z - (ai.lz ?? u.z));
+        if (moved < 0.35 && !ai.unstuckT) { ai.unstuckT = 0.9; ai.unstuckA = bestA + Math.PI + (this.R() - 0.5) * 2; }
+        ai.chkT = 0; ai.lx = u.x; ai.lz = u.z;
+      }
+      if (ai.unstuckT > 0) {
+        ai.unstuckT = Math.max(0, ai.unstuckT - dt);
+        let a2 = ai.unstuckA;
+        for (let i = 0; i < 12 && this.blocked(u.x + Math.cos(a2) * 1.2, u.z + Math.sin(a2) * 1.2, u.r, u); i++) a2 += Math.PI / 6;
+        bestA = a2;
+        if (ai.unstuckT === 0) ai.unstuckT = 0;
       }
       inp.mx = Math.cos(bestA) * A.speed; inp.mz = Math.sin(bestA) * A.speed;
     }
@@ -580,6 +695,7 @@ export class DuelSim {
       else if (!A.alive && D.alive) this.result = { winner: 'def', attHp: 0, defHp: hd };
       else if (!A.alive && !D.alive) this.result = { winner: 'def', attHp: 0, defHp: 1 };
       else this.result = { winner: 'timeout', attHp: ha, defHp: hd };
+      this.result.sup = this.units.filter((u) => u.supIdx !== undefined).map((u) => ({ role: u.team, idx: u.supIdx, hp: u.hp / u.hpMul, alive: u.alive }));
       this.events.push({ k: 'over', w: this.result.winner });
     }
   }
@@ -642,7 +758,7 @@ export class DuelSim {
         const flags = (u.shieldT > 0 ? 1 : 0) | (u.sprintT > 0 ? 2 : 0) | (u.burnT > 0 ? 4 : 0) | (u.invuln > 0 ? 8 : 0) | (u.flameT > 0 ? 16 : 0);
         return [u.id, u.kind, u.team, +u.x.toFixed(2), +u.z.toFixed(2), +u.aim.toFixed(2), Math.ceil(u.hp), Math.round(u.maxHp),
           u.alive ? 1 : 0, +u.body.toFixed(2), u.moving ? 1 : 0, Math.max(0, +u.abCd.toFixed(1)), u.isMain ? 1 : 0,
-          u.ammo, W.mag, u.reloadT > 0 ? 1 : 0, flags];
+          u.ammo, W.mag, u.reloadT > 0 ? 1 : 0, flags, u.cid || '', u.supIdx !== undefined ? 1 : 0];
       }),
       p: this.proj.map((p) => [+p.x.toFixed(2), +p.z.toFixed(2), p.kind, +Math.atan2(p.vz, p.vx).toFixed(2), p.life]),
       o: this.objs.map((o) => [o.id, o.type, +o.x.toFixed(2), +o.z.toFixed(2), +o.t.toFixed(1), o.team || '']),

@@ -256,7 +256,7 @@ label.row { flex-direction: row !important; align-items: center; gap: 8px; color
 @keyframes noise { 0% { opacity: 0.5; transform: translateY(0); } 50% { opacity: 0.9; transform: translateY(3px); } 100% { opacity: 0.6; transform: translateY(-2px); } }
 
 .letterbox { position: fixed; inset: 0; pointer-events: none; z-index: 15; }
-.lb-top, .lb-bot { position: absolute; left: 0; right: 0; height: 0; background: #000; transition: height 0.35s; }
+.lb-top, .lb-bot { position: absolute; left: 0; right: 0; height: 0; background: rgba(0, 0, 0, 0.72); transition: height 0.5s; }
 .lb-top { top: 0; } .lb-bot { bottom: 0; }
 .letterbox.on .lb-top, .letterbox.on .lb-bot { height: 11vh; }
 
@@ -321,3 +321,29 @@ label.row { flex-direction: row !important; align-items: center; gap: 8px; color
   .map-card img { height: 80px; }
   .end-btn { min-height: 46px; font-size: 14px; }
 }
+
+/* ---------- v2.1: cutscene fade, city, check, supporters ---------- */
+#hud { transition: opacity 0.4s; }
+#hud.cine { opacity: 0.22; pointer-events: none !important; }
+#hud.cine > * { pointer-events: none !important; }
+#hud.city .toolbar, #hud.city .end-btn, #hud.city .info, #hud.city .log, #hud.city .wait-bar { display: none !important; }
+.plate.check { border-image-source: url(assets/ui/btn_red.png); color: #fff; animation: pulse 0.7s infinite; }
+.plate.check img { width: 16px; height: 16px; }
+#cityHud { position: fixed; inset: 0; z-index: 11; pointer-events: none; }
+#cityHud > * { pointer-events: auto; }
+.city-top { position: absolute; top: 46px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; align-items: center; }
+.city-top .plaque { margin: 0; }
+.city-panel { position: absolute; right: max(6px, env(safe-area-inset-right)); top: 96px; bottom: 6px; width: min(430px, 50vw); overflow: auto; padding: 2px; }
+.city-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 4px; }
+.city-grid .shop-item .si-art { height: 48px; }
+.city-grid .shop-item .si-art img { width: 40px; height: 40px; }
+.city-grid .shop-item .si-title { font-size: 12px; }
+.city-info { display: flex; gap: 8px; align-items: center; }
+.city-info .slot.por img { width: 44px; height: 44px; }
+.stars { display: flex; gap: 3px; margin: 3px 0; }
+.stars i { width: 14px; height: 14px; background: #3a4466; border: 2px solid #141810; transform: rotate(45deg); }
+.stars i.on { background: var(--gold); }
+.vs-sup { display: flex; gap: 4px; align-items: center; min-height: 10px; }
+.vs-sup .slot.mini { width: 48px; height: 48px; }
+.vs-sup .slot.mini img { width: 30px; height: 30px; object-fit: contain; }
+.vs-sup-t { font-size: 13px; background: rgba(0, 0, 0, 0.6); border: 2px solid var(--ink); padding: 1px 5px; color: var(--gold); }

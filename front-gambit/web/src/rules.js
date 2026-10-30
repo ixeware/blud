@@ -2,14 +2,15 @@
 // State is plain JSON so it can be sent over the network as-is.
 import {
   SIDES, other, sq, rc, inB, cheb, around, SIDE_NAME, territory, terrShare, supplyMap, addLog, fx, alloc, spawn,
-  damagePiece, killPiece, gainXp, hasPassive, rnd, VEHICLES, damageFactory, inSmoke, RANKS, ARMY_CAP, armySize,
+  damagePiece, killPiece, gainXp, hasPassive, rnd, VEHICLES, damageBuilding, inSmoke, RANKS, ARMY_CAP, armySize, armyCap,
 } from './core.js';
+import { newCity, cityIncome, cityTurn, cardPeriod, level, canBuild, canUpgrade, doBuild, doUpgrade, cityScore, pickSabotageTarget } from './city.js';
 import { UNITS, unitDef, customPrice } from './units.js';
 import { ABILITIES, abilityTargetsFor, useAbility } from './abilities.js';
 import { CARDS, playCard, offerCards, airStrikeArea } from './cards.js';
 import { rollEvent } from './events.js';
 
-export { ARMY_CAP, armySize, SIDES, other, sq, rc, inB, cheb, SIDE_NAME, territory, supplyMap, terrShare, UNITS, unitDef, RANKS, around };
+export { ARMY_CAP, armySize, armyCap, SIDES, other, sq, rc, inB, cheb, SIDE_NAME, territory, supplyMap, terrShare, UNITS, unitDef, RANKS, around };
 export const MAX_TURNS = 60;
 
 export const SHOP = {
@@ -24,7 +25,6 @@ export const SHOP = {
   airstrike:{ name: 'Авиаудар', price: 150, icon: 'shop_airstrike', cat: 'strike', target: 'any', action: true, desc: '45 урона по площади 3×3. Перезарядка 2 хода. Аэродром −40.' },
   sabotage: { name: 'Диверсия', price: 70, icon: 'shop_sabotage', cat: 'strike', desc: 'Подрыв вражеского завода (55%) или ж/д.' },
   mine:     { name: 'Мина', price: 25, icon: 'shop_mine', cat: 'strike', target: 'mine', desc: 'Скрытая мина: 60 урона наступившему врагу.' },
-  factory:  { name: 'Завод', price: 120, icon: 'factory', cat: 'rear', desc: '+20 к доходу каждый ход. Максимум 4.' },
   rail:     { name: 'Ж/д путь', price: 15, icon: 'shop_rail', cat: 'rear', target: 'rail', desc: 'Юниты на путях перебрасываются по сети за ход и снабжаются.' },
   ew:       { name: 'РЭБ', price: 80, icon: 'shop_ew', cat: 'rear', desc: 'Помехи вражеским дронам на вашей половине.' },
   blitz:    { name: 'Блицкриг', price: 100, icon: 'shop_blitz', cat: 'rear', desc: '+2 действия в этом ходу. Перезарядка 5 ходов.' },
@@ -74,7 +74,7 @@ export function newGame(opts = {}) {
     seed: (opts.seed ?? Math.floor(Math.random() * 2 ** 31)) >>> 0,
     turn: 'w', turnNo: 1,
     money: { w: 100, b: 100 },
-    factories: { w: [{ hp: 100 }], b: [{ hp: 100 }] },
+    city: newCity(), cityT: { w: {}, b: {} }, builtTurn: { w: 0, b: 0 }, freeRails: { w: 0, b: 0 },
     rails: new Array(64).fill(null),
     mines: new Array(64).fill(null),
     revealed: new Array(64).fill(0),
@@ -109,7 +109,7 @@ export function keypointCount(s, side, type) {
 export function income(s, side, terr = territory(s)) {
   if (side === 'n') return 0;
   const t = terr.filter((o) => o === side).length;
-  let inc = 15 + 20 * s.factories[side].length + Math.floor(t / 2) + 20 * keypointCount(s, side, 'oil');
+  let inc = 15 + cityIncome(s, side) + Math.floor(t / 2) + 20 * keypointCount(s, side, 'oil');
   s.board.forEach((p) => { if (p && p.s === side && hasPassive(s, p, 'fieldhq')) inc += 10; });
   if (s.lend[side] > 0) inc += 50;
   let mul = 1;
@@ -125,9 +125,13 @@ export function price(s, side, item) {
     return d ? customPrice(d.points) : 9999;
   }
   let p = SHOP[item].price;
-  if (item === 'drone') p -= 20 * Math.min(1, keypointCount(s, side, 'radar'));
-  if (item === 'airstrike') p -= 40 * Math.min(1, keypointCount(s, side, 'airfield'));
-  return p;
+  if (item === 'drone') p -= 20 * Math.min(1, keypointCount(s, side, 'radar')) + 15 * level(s, side, 'airbase');
+  if (item === 'airstrike') p -= 40 * Math.min(1, keypointCount(s, side, 'airfield')) + 15 * level(s, side, 'airbase');
+  if (item === 'pawn') p -= 10 * level(s, side, 'barracks');
+  if (['tank', 'aa', 'mlrs', 'train'].includes(item)) p = Math.round(p * (1 - 0.15 * level(s, side, 'tankworks')));
+  if (item === 'train' && level(s, side, 'depot')) p -= 50;
+  if (item === 'rail' && s.freeRails && s.freeRails[side] > 0) p = 0;
+  return Math.max(0, p);
 }
 
 // ---------- moves ----------
@@ -280,10 +284,9 @@ export function canBuy(s, side, item) {
   if (custom && !s.customDefs[item.slice(7)]) return 'Нет чертежа';
   const it = custom ? { target: 'deploy' } : SHOP[item];
   if (!it) return 'Неизвестно';
-  if ((custom || BUY_UNIT[item]) && armySize(s, side) >= ARMY_CAP) return `Лимит армии ${ARMY_CAP}`;
+  if ((custom || BUY_UNIT[item]) && armySize(s, side) >= armyCap(s, side)) return `Лимит армии ${armyCap(s, side)}`;
   if (s.money[side] < price(s, side, item)) return 'Не хватает денег';
   if (it.action && s.actionsLeft <= 0) return 'Нет действий';
-  if (item === 'factory' && s.factories[side].length >= 4) return 'Максимум заводов';
   if (item === 'ew' && s.ew[side]) return 'РЭБ уже есть';
   if (item === 'blitz' && s.blitzCd[side] > 0) return `Перезарядка ${s.blitzCd[side]}`;
   if (item === 'drone' && s.droneCd[side] > 0) return `Перезарядка ${s.droneCd[side]}`;
@@ -350,6 +353,20 @@ export function apply(s, side, cmd) {
     const err = playCard(s, side, cmd.card, cmd.target);
     if (err) return err;
     afterAction(s, true);
+    return null;
+  }
+
+  if (cmd.c === 'build') {
+    const err = canBuild(s, side, cmd.plot, cmd.type);
+    if (err) return err;
+    doBuild(s, side, cmd.plot, cmd.type);
+    return null;
+  }
+
+  if (cmd.c === 'upgrade') {
+    const err = canUpgrade(s, side, cmd.plot);
+    if (err) return err;
+    doUpgrade(s, side, cmd.plot);
     return null;
   }
 
@@ -440,26 +457,24 @@ function doMove(s, from, to, via) {
 }
 
 function buy(s, side, item, target, sub) {
+  const academy = level(s, side, 'academy') > 0;
+  const recruit = (p) => { if (academy) { p.rank = 1; p.xp = 3; p.maxHp = Math.round(p.maxHp * 1.1); p.hp = p.maxHp; } return p; };
   if (item.startsWith('custom:')) {
     const cid = item.slice(7);
-    s.board[target] = alloc(s, 'C', side, { cid });
+    s.board[target] = recruit(alloc(s, 'C', side, { cid }));
     fx(s, { k: 'spawn', sq: target, custom: true });
     addLog(s, `${SIDE_NAME[side]}: в строю «${s.customDefs[cid].name}».`);
     return;
   }
   if (BUY_UNIT[item]) {
-    s.board[target] = alloc(s, BUY_UNIT[item], side);
+    s.board[target] = recruit(alloc(s, BUY_UNIT[item], side));
     fx(s, { k: item === 'train' ? 'trainArrive' : 'spawn', sq: target, side, t: BUY_UNIT[item] });
     addLog(s, `${SIDE_NAME[side]}: прибыл юнит «${UNITS[BUY_UNIT[item]].name}».`);
     return;
   }
   switch (item) {
-    case 'factory':
-      s.factories[side].push({ hp: 100 });
-      fx(s, { k: 'factory', side, idx: s.factories[side].length - 1 });
-      addLog(s, `${SIDE_NAME[side]}: построен завод (${s.factories[side].length}).`);
-      break;
     case 'rail':
+      if (s.freeRails[side] > 0) s.freeRails[side]--;
       s.rails[target] = side;
       fx(s, { k: 'build', sq: target });
       break;
@@ -482,13 +497,13 @@ function buy(s, side, item, target, sub) {
       const en = other(side);
       const enemyRails = [];
       s.rails.forEach((o, i) => { if (o === en) enemyRails.push(i); });
-      const wantFactory = sub === 'rail' ? false : sub === 'factory' ? true : s.factories[en].length > 0;
-      fx(s, { k: 'sabotage', side, target: wantFactory ? 'factory' : 'rail' });
-      if (wantFactory && s.factories[en].length > 0) {
-        if (rnd(s) < 0.55) {
-          damageFactory(s, en, s.factories[en].length - 1, 999);
-          addLog(s, `${SIDE_NAME[side]}: диверсия удалась — вражеский завод взорван!`);
-        } else addLog(s, `${SIDE_NAME[side]}: диверсанты схвачены у завода.`);
+      const plot = sub === 'rail' ? -1 : pickSabotageTarget(s, en, sub !== 'any');
+      fx(s, { k: 'sabotage', side, target: plot >= 0 ? 'city' : 'rail', plot });
+      if (plot >= 0) {
+        if (rnd(s) < 0.55 * (1 - 0.2 * level(s, en, 'aasite'))) {
+          damageBuilding(s, en, plot, 999);
+          addLog(s, `${SIDE_NAME[side]}: диверсия удалась — вражеское здание взорвано!`);
+        } else addLog(s, `${SIDE_NAME[side]}: диверсанты схвачены в тылу врага.`);
       } else if (enemyRails.length) {
         for (let k = 0; k < 3 && enemyRails.length; k++) {
           const j = enemyRails.splice(Math.floor(rnd(s) * enemyRails.length), 1)[0];
@@ -587,6 +602,8 @@ function sideStart(s, side) {
     s.money[side] += income(s, side, terr);
     if (s.lend[side] > 0) s.lend[side]--;
     for (const k of ['blitzCd', 'droneCd', 'b2Cd', 'airCd']) if (s[k][side] > 0) s[k][side]--;
+    if (level(s, side, 'airbase') >= 3) { if (s.droneCd[side] > 0) s.droneCd[side]--; if (s.airCd[side] > 0) s.airCd[side]--; }
+    cityTurn(s, side);
     const share = terrShare(s, side, terr);
     const was = s.b2Ready[side];
     s.b2Ready[side] = share <= 0.39 && s.b2Cd[side] === 0;
@@ -594,7 +611,7 @@ function sideStart(s, side) {
       fx(s, { k: 'b2ready', side });
       addLog(s, `${SIDE_NAME[side]}: линия фронта ${Math.round(share * 100)}% — командование выделило бомбардировщик B-2!`);
     }
-    if (s.opts.cards && s.turnNo >= 3 && s.turnNo % 3 === 0 && !s.offer[side]) offerCards(s, side);
+    if (s.opts.cards && s.turnNo >= 3 && s.turnNo % cardPeriod(s, side) === 0 && !s.offer[side]) offerCards(s, side);
   }
   const sup = supplyMap(s, terr);
   s.board.forEach((p, i) => {
@@ -615,7 +632,7 @@ function sideStart(s, side) {
 
 export function score(s, side) {
   const terr = territory(s);
-  let pts = terr.filter((o) => o === side).length * 2 + s.factories[side].length * 5 + s.keypoints.filter((k) => k.owner === side).length * 4;
+  let pts = terr.filter((o) => o === side).length * 2 + cityScore(s, side) + s.keypoints.filter((k) => k.owner === side).length * 4;
   s.board.forEach((p) => { if (p && p.s === side && p.t !== 'K') pts += unitDef(s, p).value * 3 * (p.hp / p.maxHp); });
   return Math.round(pts);
 }
@@ -631,23 +648,54 @@ function endByScore(s) {
 
 // ---------- Duels ----------
 
-export function duelSupport(s, sqTarget, side, exclude) {
-  let n = 0;
-  for (const i of around(sqTarget)) {
-    if (i === exclude) continue;
-    const p = s.board[i];
-    if (p && p.s === side) n++;
-  }
-  return Math.min(2, n);
+// can the piece at i capture on `target` (i.e. does it protect / attack that square)?
+export function covers(s, i, target) {
+  const p = s.board[i];
+  if (!p || p.stun > 0 || i === target) return false;
+  const saved = s.board[target];
+  s.board[target] = { id: -1, t: 'P', s: p.s === 'w' ? 'b' : 'w', hp: 1, maxHp: 1, st: {}, cds: {}, stun: 0, rank: 0 };
+  let ok = false;
+  try { ok = pieceMoves(s, i).some((m) => m.to === target && m.capture); } finally { s.board[target] = saved; }
+  return ok;
 }
 
-function fighter(s, i, sup, role, exclude) {
+export function generalSquare(s, side) { return s.board.findIndex((p) => p && p.s === side && p.t === 'K'); }
+
+// is the general of `side` attacked right now?
+export function inCheck(s, side) {
+  const k = generalSquare(s, side);
+  if (k < 0) return false;
+  for (let i = 0; i < 64; i++) {
+    const p = s.board[i];
+    if (!p || p.s === side || p.stun > 0) continue;
+    if (pieceMoves(s, i).some((m) => m.to === k && m.capture)) return true;
+  }
+  return false;
+}
+
+export const MAX_SUPPORT = 3;
+
+// friendly pieces that join a fight on `target`: everyone covering the square (chess "protection"),
+// plus the general's bodyguards standing next to him
+export function supporters(s, side, target, exclude) {
+  const main = s.board[target] && s.board[target].s === side ? s.board[target] : null;
+  const generalHere = main && main.t === 'K';
+  const list = [];
+  s.board.forEach((p, i) => {
+    if (!p || p.s !== side || i === exclude || i === target || p.stun > 0) return;
+    if (covers(s, i, target) || (generalHere && cheb(i, target) === 1)) list.push(i);
+  });
+  const val = (i) => (s.board[i].t === 'K' ? 50 : unitDef(s, s.board[i]).value);
+  list.sort((a, b) => val(b) - val(a) || cheb(a, target) - cheb(b, target));
+  return list.slice(0, MAX_SUPPORT);
+}
+
+function fighter(s, i, sup, role) {
   const p = s.board[i];
   const d = unitDef(s, p);
   return {
-    t: p.t, s: p.s, cid: p.cid || null, hp: p.hp, maxHp: p.maxHp, rank: p.rank,
-    supplied: p.s === 'n' ? true : sup[p.s][i],
-    allies: duelSupport(s, role === 'att' ? exclude : i, p.s, role === 'att' ? i : i),
+    id: p.id, sq: i, t: p.t, s: p.s, cid: p.cid || null, hp: p.hp, maxHp: p.maxHp, rank: p.rank,
+    supplied: p.s === 'n' ? true : sup[p.s][i], allies: 0,
     dug: role === 'def' && p.dug, smoke: role === 'def' && inSmoke(s, i), bld: role === 'def' && s.terrain[i] === 'bld',
     buff: p.st.buff > 0, penal: p.st.penal > 0, marked: p.st.marked > 0, shield: p.st.shield > 0,
     counter: p.s !== 'n' && s.effects.counter[p.s] > 0,
@@ -659,10 +707,10 @@ function fighter(s, i, sup, role, exclude) {
 function startDuel(s, from, to) {
   const sup = supplyMap(s, territory(s));
   s.phase = 'duel';
-  const att = fighter(s, from, sup, 'att', to);
-  att.allies = duelSupport(s, to, s.board[from].s, from);
+  const att = fighter(s, from, sup, 'att');
   const def = fighter(s, to, sup, 'def');
-  def.allies = duelSupport(s, to, s.board[to].s, to);
+  att.sup = supporters(s, att.s, to, from).map((i) => fighter(s, i, sup, 'sup'));
+  def.sup = supporters(s, def.s, to, to).map((i) => fighter(s, i, sup, 'sup'));
   s.rt = {
     kind: 'duel', from, to, att, def,
     seed: Math.floor(rnd(s) * 1e9),
@@ -670,14 +718,16 @@ function startDuel(s, from, to) {
     night: s.effects.blackout > 0,
   };
   addLog(s, `БОЙ: ${att.name} (${SIDE_NAME[att.s]}) атакует ${def.name}!`);
-  fx(s, { k: 'duel', from, to });
+  for (const f of att.sup.concat(def.sup)) fx(s, { k: 'support', from: f.sq, to, side: f.s });
+  if (att.sup.length || def.sup.length) addLog(s, `В бой вступают: ${att.sup.concat(def.sup).map((f) => f.name).join(', ')}.`);
+  fx(s, { k: 'duel', from, to, sup: att.sup.length + def.sup.length });
   if (s.autoDuel) finishDuel(s, autoResolve(s.rt));
 }
 
 const POWER = { P: 1, N: 1.25, B: 1.1, R: 1.6, Q: 1.8, K: 1.0, M: 0.9, E: 1.0, A: 1.4, L: 1.3, T: 1.7, D: 1.3, C: 1.3 };
 
-function fpower(f, defending) {
-  let p = f.hp * (POWER[f.t] || 1) * (f.supplied ? 1 : 0.75) * (1 + 0.25 * f.allies) * (1 + 0.08 * f.rank);
+export function fpower(f, defending) {
+  let p = f.hp * (POWER[f.t] || 1) * (f.supplied ? 1 : 0.75) * (1 + 0.08 * f.rank);
   if (f.buff) p *= 1.25;
   if (f.penal) p *= 1.5;
   if (f.counter) p *= 1.3;
@@ -691,16 +741,59 @@ function fpower(f, defending) {
   return p;
 }
 
-export function autoResolve(rt) {
-  const pa = fpower(rt.att, false), pd = fpower(rt.def, true);
-  const attWins = Math.random() < pa / (pa + pd);
-  const frac = 1 - Math.min(0.9, (attWins ? pd / pa : pa / pd) * 0.7);
-  return attWins
-    ? { winner: 'att', attHp: Math.max(1, Math.round(rt.att.hp * frac)), defHp: 0 }
-    : { winner: 'def', attHp: 0, defHp: Math.max(1, Math.round(rt.def.hp * frac)) };
+// win chance of attacking `to` from `from`, including all supporters on both sides
+export function duelOdds(s, from, to, sup = supplyMap(s, territory(s))) {
+  const A = s.board[from], D = s.board[to];
+  if (!A || !D) return 0;
+  const att = fighter(s, from, sup, 'att'), def = fighter(s, to, sup, 'def');
+  att.sup = supporters(s, A.s, to, from).map((i) => fighter(s, i, sup, 'sup'));
+  def.sup = supporters(s, D.s, to, to).map((i) => fighter(s, i, sup, 'sup'));
+  const pa = teamPower(att, false), pd = teamPower(def, true);
+  return pa / (pa + pd);
 }
 
-// result: {winner:'att'|'def'|'timeout', attHp, defHp}
+export function teamPower(f, defending) {
+  return fpower(f, defending) + (f.sup || []).reduce((a, x) => a + 0.75 * fpower(x, false), 0);
+}
+
+export function autoResolve(rt) {
+  const pa = teamPower(rt.att, false), pd = teamPower(rt.def, true);
+  const attWins = Math.random() < pa / (pa + pd);
+  const frac = 1 - Math.min(0.9, (attWins ? pd / pa : pa / pd) * 0.7);
+  const sup = [];
+  for (const role of ['att', 'def']) {
+    const won = (role === 'att') === attWins;
+    (rt[role].sup || []).forEach((f, idx) => {
+      const loss = won ? 0.1 + Math.random() * 0.2 : 0.3 + Math.random() * 0.4;
+      const hp = Math.round(f.hp - f.maxHp * loss);
+      sup.push({ role, idx, hp: Math.max(0, hp), alive: hp > 0 });
+    });
+  }
+  return attWins
+    ? { winner: 'att', attHp: Math.max(1, Math.round(rt.att.hp * frac)), defHp: 0, sup }
+    : { winner: 'def', attHp: 0, defHp: Math.max(1, Math.round(rt.def.hp * frac)), sup };
+}
+
+function applySupporters(s, rt, res) {
+  for (const r of res.sup || []) {
+    const f = rt[r.role].sup && rt[r.role].sup[r.idx];
+    if (!f) continue;
+    const p = s.board[f.sq];
+    if (!p || p.id !== f.id) continue;
+    if (!r.alive) {
+      if (p.t === 'K') {
+        p.hp = 1;
+        fx(s, { k: 'evac', sq: f.sq });
+        addLog(s, `${SIDE_NAME[p.s]}: раненого генерала эвакуировали в бункер.`);
+      } else killPiece(s, f.sq, r.role === 'att' ? rt.def.s : rt.att.s, null);
+    } else {
+      p.hp = Math.max(1, Math.min(p.maxHp, Math.round(r.hp)));
+      gainXp(s, p, 1);
+    }
+  }
+}
+
+// result: {winner:'att'|'def'|'timeout', attHp, defHp, sup:[{role, idx, hp, alive}]}
 export function finishDuel(s, res) {
   const rt = s.rt;
   if (!rt || rt.kind !== 'duel') return;
@@ -709,6 +802,7 @@ export function finishDuel(s, res) {
   s.rt = null;
   if (!a || !d) { afterAction(s); return; }
   a.st.penal = 0; d.st.penal = 0;
+  applySupporters(s, rt, res);
   if (res.winner === 'att') {
     s.stats[a.s].duelsWon++;
     a.hp = Math.max(1, Math.min(a.maxHp, Math.round(res.attHp)));
@@ -733,16 +827,16 @@ export function finishDuel(s, res) {
 }
 
 // ---------- Drone ----------
-// res: {hits:[{sq, dmg}], factory:{side, idx, dmg}?}
+// res: {hits:[{sq, dmg}], building:{side, plot, dmg}?}
 export function finishDrone(s, res) {
   const rt = s.rt;
   if (!rt || rt.kind !== 'drone') return;
   s.phase = 'board';
   s.rt = null;
-  if (!res.hits.length && !res.factory) addLog(s, `${SIDE_NAME[rt.side]}: дрон потерян.`);
-  if (res.factory) {
-    addLog(s, `${SIDE_NAME[rt.side]}: дрон поразил вражеский завод!`);
-    damageFactory(s, res.factory.side, res.factory.idx, res.factory.dmg);
+  if (!res.hits.length && !res.building) addLog(s, `${SIDE_NAME[rt.side]}: дрон потерян.`);
+  if (res.building) {
+    addLog(s, `${SIDE_NAME[rt.side]}: дрон поразил здание во вражеском тылу!`);
+    damageBuilding(s, res.building.side, res.building.plot, res.building.dmg);
   }
   for (const h of res.hits) {
     const p = s.board[h.sq];

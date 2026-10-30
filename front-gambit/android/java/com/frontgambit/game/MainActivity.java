@@ -155,13 +155,18 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        // silence music and sound effects while the game is in the background
+        web.evaluateJavascript("window.onAppPause && window.onAppPause()", null);
         web.onPause();
+        web.pauseTimers();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        web.resumeTimers();
         web.onResume();
+        web.evaluateJavascript("window.onAppResume && window.onAppResume()", null);
         hideSystemUi();
     }
 

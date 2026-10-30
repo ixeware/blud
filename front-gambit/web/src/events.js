@@ -1,11 +1,12 @@
 // Random front, historical and city events.
-import { sq, rc, around, fx, addLog, damagePiece, spawn, rnd, pick, SIDE_NAME, other, territory, damageFactory, VEHICLES } from './core.js';
+import { sq, rc, around, fx, addLog, damagePiece, spawn, rnd, pick, SIDE_NAME, other, territory, damageBuilding, VEHICLES } from './core.js';
+import { cityScore, pickSabotageTarget } from './city.js';
 import { unitDef } from './units.js';
 
 function score(s, side) {
   let pts = 0;
   s.board.forEach((p) => { if (p && p.s === side && p.t !== 'K') pts += unitDef(s, p).value * (p.hp / p.maxHp); });
-  return pts + s.factories[side].length * 2;
+  return pts + cityScore(s, side) / 2;
 }
 const leader = (s) => (score(s, 'w') >= score(s, 'b') ? 'w' : 'b');
 const pieces = (s, pred) => s.board.map((p, i) => (p && pred(p, i) ? i : -1)).filter((i) => i >= 0);
@@ -79,9 +80,9 @@ export const EVENTS = {
     apply: (s) => { s.effects.depression = 3; } },
   ev_pact: { kind: 'history', title: 'Пакт о ненападении', text: 'Один раунд перемирия: никаких атак и ударов.',
     apply: (s) => { s.effects.ceasefire = 1; } },
-  ev_revolution: { kind: 'history', title: 'Революция в тылу', text: 'У лидера бастуют рабочие: один его завод уничтожен.',
-    can: (s) => s.factories[leader(s)].length > 0,
-    apply: (s) => { const L = leader(s); damageFactory(s, L, s.factories[L].length - 1, 999); } },
+  ev_revolution: { kind: 'history', title: 'Революция в тылу', text: 'У лидера бастуют рабочие: одно здание в его тылу разрушено.',
+    can: (s) => s.city[leader(s)].some((b) => b),
+    apply: (s) => { const L = leader(s); const plot = pickSabotageTarget(s, L, true); if (plot >= 0) damageBuilding(s, L, plot, 999); } },
   ev_breakthrough: { kind: 'history', title: 'Технологический прорыв', text: 'Конструкторы отстающих создали новую броню: вся их техника +50 к максимальному HP.',
     apply: (s) => {
       const side = other(leader(s));

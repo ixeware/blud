@@ -47,7 +47,7 @@
       <label class="row"><input type="checkbox" id="setAssist" checked> Помощь в прицеливании</label>
     </div>
   </div>
-  <div class="ver">v2.0 · онлайн через бесплатный сервер PeerJS</div>
+  <div class="ver">v2.1 · онлайн через бесплатный сервер PeerJS</div>
 </div>
 
 <!-- MATCH SETUP -->
@@ -100,6 +100,7 @@
     <div class="tb-left">
       <div id="turnBadge" class="plate"><img class="px" id="turnFlag" src="assets/icons/flag_w.png" alt=""><span id="turnText">Ход 1/60</span></div>
       <div id="actBadge" class="plate small"></div>
+      <div id="checkBadge" class="plate small check hidden"><img class="px" src="assets/icons/warning.png" alt="">ШАХ</div>
     </div>
     <div class="tb-mid">
       <div class="terr"><div id="terrW"></div><div id="terrB"></div></div>
@@ -116,6 +117,7 @@
   </div>
   <div class="toolbar">
     <button class="sq big" id="shopBtn" title="Штаб"><img class="px" src="assets/icons/shop.png" alt=""><span>Штаб</span></button>
+    <button class="sq big" id="cityBtn" title="Тыл"><img class="px" src="assets/icons/city.png" alt=""><span>Тыл</span></button>
     <button class="sq big" id="cardsBtn" title="Приказы"><img class="px" src="assets/icons/cards.png" alt=""><span>Приказы</span><b id="cardsCount" class="badge-n hidden">0</b></button>
     <button class="sq big" id="logBtn" title="Журнал"><img class="px" src="assets/icons/log.png" alt=""><span>Журнал</span></button>
     <button class="sq big b2 hidden" id="b2Btn" title="B-2"><img class="px" src="assets/icons/b2.png" alt=""><span>B-2</span></button>
@@ -138,6 +140,16 @@
   </div>
   <div id="targetBar" class="target-bar hidden"><span id="targetText">Выберите клетку</span><button class="btn red small" id="targetCancel">Отмена</button></div>
   <div id="waitBar" class="wait-bar hidden">Ход противника…</div>
+</div>
+
+<!-- REAR CITY -->
+<div id="cityHud" class="hidden">
+  <div class="city-top">
+    <div class="plaque">Тыловой город</div>
+    <div class="plate money"><img class="px" src="assets/icons/coin.png" alt=""><span id="cityMoney">0</span></div>
+    <button class="btn gold" id="cityExit"><img class="px" src="assets/icons/back.png" alt="">К фронту</button>
+  </div>
+  <div class="panel city-panel"><div id="cityBody"></div></div>
 </div>
 
 <!-- SHOP -->
@@ -211,9 +223,9 @@
 
 <!-- VS INTRO -->
 <div id="vs" class="vs hidden">
-  <div class="vs-side left"><div class="slot vs-por"><img class="px" id="vsPorA" src="" alt=""></div><div class="plaque" id="vsNameA"></div><div class="vs-tags" id="vsTagsA"></div></div>
+  <div class="vs-side left"><div class="slot vs-por"><img class="px" id="vsPorA" src="" alt=""></div><div class="plaque" id="vsNameA"></div><div class="vs-tags" id="vsTagsA"></div><div class="vs-sup" id="vsSupA"></div></div>
   <div class="vs-mid">VS</div>
-  <div class="vs-side right"><div class="slot vs-por"><img class="px" id="vsPorD" src="" alt=""></div><div class="plaque" id="vsNameD"></div><div class="vs-tags" id="vsTagsD"></div></div>
+  <div class="vs-side right"><div class="slot vs-por"><img class="px" id="vsPorD" src="" alt=""></div><div class="plaque" id="vsNameD"></div><div class="vs-tags" id="vsTagsD"></div><div class="vs-sup" id="vsSupD"></div></div>
 </div>
 
 <!-- DRONE HUD -->

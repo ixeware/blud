@@ -3,7 +3,7 @@ import { rng, sqToWorld, TILE } from './rng.js';
 import { unitDef } from './units.js';
 import { hasPassive } from './core.js';
 
-export const FACTORY_POS = (side, k) => ({ x: -15 + k * 10, z: side === 'w' ? 24 : -24 });
+import { plotPos, level } from './city.js';
 
 export const DRONE_BATTERY = 20;
 const SPEED = 10;
@@ -48,7 +48,10 @@ export class DroneSim {
       this.pieces.push({ sq: i, t: p.t, s: p.s, x: w.x, z: w.z, v: d.value, air: !!d.air, aa: hasPassive(state, p, 'aacover') });
     });
     const opp = this.side === 'w' ? 'b' : 'w';
-    this.factories = (state.factories[opp] || []).map((f, k) => ({ ...FACTORY_POS(opp, k), idx: k, side: opp }));
+    this.buildings = [];
+    (state.city ? state.city[opp] : []).forEach((b, plot) => { if (b) this.buildings.push({ ...plotPos(opp, plot), plot, side: opp, h: 3 + b.lvl }); });
+    this.cityAA = state.city ? level(state, opp, 'aasite') : 0;
+    this.cityAAT = 0;
     // AI target
     const en = this.pieces.filter((p) => p.s !== this.side);
     en.sort((a, b) => (b.v === 100 ? 6 : b.v) - (a.v === 100 ? 6 : a.v) + (this.R() - 0.5) * 3);
@@ -101,10 +104,19 @@ export class DroneSim {
         if (this.aaT > 0.25) { this.aaT = 0; this.events.push({ k: 'flak', x: this.x, y: this.y, z: this.z }); if (this.R() < 0.18) return this.shotDown(); }
       }
     }
-    for (const f of this.factories) {
-      if (Math.abs(f.x - this.x) < 2.4 && Math.abs(f.z - this.z) < 1.9 && this.y < 3.6) return this.explodeFactory(f);
+    // anti-aircraft division protects the enemy rear city
+    if (this.cityAA && Math.abs(this.z) > 18 && Math.sign(this.z) === (this.side === 'w' ? -1 : 1)) {
+      this.cityAAT += dt;
+      if (this.cityAAT > 0.4) {
+        this.cityAAT = 0;
+        this.events.push({ k: 'flak', x: this.x, y: this.y, z: this.z });
+        if (this.R() < 0.06 * this.cityAA) return this.shotDown();
+      }
     }
-    const LIM = 7.5 * TILE;
+    for (const f of this.buildings) {
+      if (Math.abs(f.x - this.x) < 3.4 && Math.abs(f.z - this.z) < 2.2 && this.y < f.h) return this.explodeFactory(f);
+    }
+    const LIM = 8.6 * TILE;
     if (Math.abs(this.x) > LIM || Math.abs(this.z) > LIM) {
       return this.finish([], 'Дрон улетел за пределы связи');
     }
@@ -126,10 +138,10 @@ export class DroneSim {
 
   explodeFactory(f) {
     this.events.push({ k: 'boom', x: this.x, y: this.y, z: this.z });
-    if (this.decoy) return this.finish([], 'Это был макет завода!');
+    if (this.decoy) return this.finish([], 'Это был макет здания!');
     this.over = true;
-    this.result = { hits: [], factory: { side: f.side, idx: f.idx, dmg: 60 } };
-    this.msg = 'Завод поражён!';
+    this.result = { hits: [], building: { side: f.side, plot: f.plot, dmg: 60 } };
+    this.msg = 'Здание в тылу поражено!';
   }
 
   explodeAt(direct) {
