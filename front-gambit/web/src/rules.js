@@ -23,7 +23,7 @@ export const SHOP = {
   train:    { name: 'Бронепоезд', price: 200, icon: 'unit_T', cat: 'tech', target: 'railFree', desc: 'Ездит по вашим путям, бьёт бортовым залпом и снабжает.' },
   drone:    { name: 'FPV-дрон', price: 70, icon: 'shop_drone', cat: 'strike', action: true, desc: 'Ведите дрона-камикадзе сами. Перезарядка 2 хода. Радар −20.' },
   airstrike:{ name: 'Авиаудар', price: 150, icon: 'shop_airstrike', cat: 'strike', target: 'any', action: true, desc: '45 урона по площади 3×3. Перезарядка 2 хода. Аэродром −40.' },
-  sabotage: { name: 'Диверсия', price: 70, icon: 'shop_sabotage', cat: 'strike', desc: 'Подрыв вражеского завода (55%) или ж/д.' },
+  sabotage: { name: 'Диверсия', price: 110, icon: 'shop_sabotage', cat: 'strike', desc: 'Удар по зданию в тылу врага (40%, −70 прочности) или подрыв 2 участков ж/д. Перезарядка 3 хода.' },
   mine:     { name: 'Мина', price: 25, icon: 'shop_mine', cat: 'strike', target: 'mine', desc: 'Скрытая мина: 60 урона наступившему врагу.' },
   rail:     { name: 'Ж/д путь', price: 15, icon: 'shop_rail', cat: 'rear', target: 'rail', desc: 'Юниты на путях перебрасываются по сети за ход и снабжаются.' },
   ew:       { name: 'РЭБ', price: 80, icon: 'shop_ew', cat: 'rear', desc: 'Помехи вражеским дронам на вашей половине.' },
@@ -79,7 +79,7 @@ export function newGame(opts = {}) {
     mines: new Array(64).fill(null),
     revealed: new Array(64).fill(0),
     ew: { w: false, b: false },
-    blitzCd: { w: 0, b: 0 }, droneCd: { w: 0, b: 0 }, airCd: { w: 0, b: 0 }, b2Cd: { w: 0, b: 0 }, b2Ready: { w: false, b: false },
+    blitzCd: { w: 0, b: 0 }, droneCd: { w: 0, b: 0 }, airCd: { w: 0, b: 0 }, b2Cd: { w: 0, b: 0 }, b2Ready: { w: false, b: false }, sabCd: { w: 0, b: 0 },
     actionsLeft: 1, movedIds: [],
     phase: 'board', rt: null, winner: null,
     log: [], fx: [], fxSeq: 0, lastMove: null,
@@ -291,6 +291,7 @@ export function canBuy(s, side, item) {
   if (item === 'blitz' && s.blitzCd[side] > 0) return `Перезарядка ${s.blitzCd[side]}`;
   if (item === 'drone' && s.droneCd[side] > 0) return `Перезарядка ${s.droneCd[side]}`;
   if (item === 'airstrike' && s.airCd[side] > 0) return `Перезарядка ${s.airCd[side]}`;
+  if (item === 'sabotage' && s.sabCd && s.sabCd[side] > 0) return `Перезарядка ${s.sabCd[side]}`;
   if ((item === 'drone' || item === 'airstrike') && s.effects.blizzard > 0) return 'Нелётная погода';
   if ((item === 'airstrike' || item === 'sabotage') && s.effects.ceasefire > 0) return 'Перемирие';
   if (it.target) {
@@ -300,8 +301,9 @@ export function canBuy(s, side, item) {
   return null;
 }
 
+// B-2 only while the side really holds 39% of the front or less (checked live, not just at turn start)
 export function b2Available(s, side) {
-  return s.b2Ready[side] && s.b2Cd[side] === 0 && !s.effects.blizzard && !s.effects.ceasefire;
+  return s.b2Ready[side] && s.b2Cd[side] === 0 && !s.effects.blizzard && !s.effects.ceasefire && terrShare(s, side) <= 0.39;
 }
 
 // ---------- commands ----------
@@ -499,20 +501,21 @@ function buy(s, side, item, target, sub) {
       s.rails.forEach((o, i) => { if (o === en) enemyRails.push(i); });
       const plot = sub === 'rail' ? -1 : pickSabotageTarget(s, en, sub !== 'any');
       fx(s, { k: 'sabotage', side, target: plot >= 0 ? 'city' : 'rail', plot });
+      if (s.sabCd) s.sabCd[side] = 3;
       if (plot >= 0) {
-        if (rnd(s) < 0.55 * (1 - 0.2 * level(s, en, 'aasite'))) {
-          damageBuilding(s, en, plot, 999);
-          addLog(s, `${SIDE_NAME[side]}: диверсия удалась — вражеское здание взорвано!`);
+        if (rnd(s) < 0.4 * (1 - 0.2 * level(s, en, 'aasite'))) {
+          const gone = damageBuilding(s, en, plot, 70);
+          addLog(s, `${SIDE_NAME[side]}: диверсия удалась — ${gone ? 'вражеское здание взорвано' : 'вражеское здание повреждено'}!`);
         } else addLog(s, `${SIDE_NAME[side]}: диверсанты схвачены в тылу врага.`);
       } else if (enemyRails.length) {
-        for (let k = 0; k < 3 && enemyRails.length; k++) {
+        for (let k = 0; k < 2 && enemyRails.length; k++) {
           const j = enemyRails.splice(Math.floor(rnd(s) * enemyRails.length), 1)[0];
           s.rails[j] = null;
           fx(s, { k: 'boom', sq: j });
         }
         addLog(s, `${SIDE_NAME[side]}: подорваны вражеские железные дороги!`);
       } else {
-        const st = Math.min(60, s.money[en]);
+        const st = Math.min(40, s.money[en]);
         s.money[en] -= st;
         s.money[side] += st;
         addLog(s, `${SIDE_NAME[side]}: диверсанты ограбили склад (+${st}).`);
@@ -601,7 +604,7 @@ function sideStart(s, side) {
   if (side !== 'n') {
     s.money[side] += income(s, side, terr);
     if (s.lend[side] > 0) s.lend[side]--;
-    for (const k of ['blitzCd', 'droneCd', 'b2Cd', 'airCd']) if (s[k][side] > 0) s[k][side]--;
+    for (const k of ['blitzCd', 'droneCd', 'b2Cd', 'airCd', 'sabCd']) if (s[k] && s[k][side] > 0) s[k][side]--;
     if (level(s, side, 'airbase') >= 3) { if (s.droneCd[side] > 0) s.droneCd[side]--; if (s.airCd[side] > 0) s.airCd[side]--; }
     cityTurn(s, side);
     const share = terrShare(s, side, terr);

@@ -146,7 +146,7 @@ export function playCard(s, side, id, target) {
   }
   s.hands[side].splice(idx, 1);
   addLog(s, `${SIDE_NAME[side]}: приказ «${c.name}».`);
-  fx(s, { k: 'card', id, side, sq: target });
+  fx(s, { k: 'card', card: id, side, sq: target });
   c.apply(s, side, target);
   return null;
 }

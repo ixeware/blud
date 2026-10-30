@@ -46,16 +46,28 @@ function areaDamage(s, from, center, dmgC, dmgS, kind = 'arty', radius = 1) {
   return kills;
 }
 
-function line(s, from, dirs, max, stopAtPiece = true) {
+// first pieces along the given directions; `overOwnInfantry` lets guns fire over friendly soldiers
+function line(s, from, dirs, max, stopAtPiece = true, overOwnInfantry = false) {
   const [r, c] = rc(from);
+  const me = s.board[from];
   const out = [];
   for (const [dr, dc] of dirs) {
     for (let k = 1; k <= max; k++) {
       if (!inB(r + dr * k, c + dc * k)) break;
       const i = sq(r + dr * k, c + dc * k);
-      if (s.board[i]) { out.push(i); if (stopAtPiece) break; }
+      const q = s.board[i];
+      if (!q) continue;
+      if (overOwnInfantry && me && q.s === me.s && !isVeh(s, q)) continue;
+      out.push(i);
+      if (stopAtPiece) break;
     }
   }
+  return out;
+}
+function lineSquares(from, dirs, max) {
+  const [r, c] = rc(from);
+  const out = [];
+  for (const [dr, dc] of dirs) for (let k = 1; k <= max; k++) { if (!inB(r + dr * k, c + dc * k)) break; out.push(sq(r + dr * k, c + dc * k)); }
   return out;
 }
 
@@ -70,23 +82,24 @@ const name = (s, q) => unitDef(s, q).name;
 
 export const ABILITIES = {
   // ======================= ACTIVE (board) =======================
-  dig: { name: 'Окопаться', type: 'active', cd: 1, cost: 1,
+  dig: { name: 'Окопаться', type: 'active', hint: 'Юнит уже окопан.', cd: 1, cost: 1,
     desc: 'Юнит окапывается: −30% урона и бонус в обороне, пока не сдвинется.',
     targets: (s, f) => (s.board[f].dug ? [] : [f]),
     apply: (s, f) => { s.board[f].dug = true; fx(s, { k: 'dig', sq: f }); } },
   ambush: { name: 'Засада', type: 'active', cd: 3, cost: 2,
     desc: 'Первый враг, закончивший ход в 2 клетках, получает 35 урона.',
+    area: (s, f) => around(f, 2, true),
     targets: (s, f) => [f],
     apply: (s, f) => { s.board[f].st.overwatch = 3; fx(s, { k: 'ring', sq: f, c: 'gold' }); } },
-  raid: { name: 'Диверсионный рейд', type: 'active', cd: 2, cost: 3, harm: true,
-    desc: 'Враг на клетке хода коня или рядом: 25 урона и оглушение на ход.',
-    targets: (s, f) => {
-      const [r, c] = rc(f);
-      return KNIGHT.concat(ORTH).filter(([dr, dc]) => inB(r + dr, c + dc)).map(([dr, dc]) => sq(r + dr, c + dc)).filter((i) => enemyAt(s, f, i));
-    },
-    apply: (s, f, t) => { fx(s, { k: 'raid', from: f, to: t }); stun(s, t, 2); damagePiece(s, t, 25, { src: f, side: s.board[f].s, kind: 'direct' }); } },
-  paradrop: { name: 'Десант', type: 'active', cd: 4, cost: 3,
+  raid: { name: 'Диверсионный рейд', type: 'active', cd: 3, cost: 3, harm: true,
+    desc: 'Враг в 2 клетках: 20 урона и оглушение на ход.',
+    hint: 'Нужен враг не дальше 2 клеток от спецназа.',
+    area: (s, f) => inRange(f, 2, () => true),
+    targets: (s, f) => inRange(f, 2, (i) => enemyAt(s, f, i)),
+    apply: (s, f, t) => { fx(s, { k: 'raid', from: f, to: t }); stun(s, t, 2); damagePiece(s, t, 20, { src: f, side: s.board[f].s, kind: 'direct' }); } },
+  paradrop: { name: 'Десант', type: 'active', hint: 'Нужна свободная клетка своей территории или рядом с союзником в 4 клетках.', cd: 4, cost: 3,
     desc: 'Перебросить юнит на пустую клетку в 4 клетках: на свою территорию или рядом с союзником.',
+    area: (s, f) => inRange(f, 4, () => true),
     targets: (s, f) => {
       const p = s.board[f], terr = territory(s);
       return inRange(f, 4, (i) => !s.board[i] && (terr[i] === p.s || around(i).some((j) => j !== f && allyAt(s, f, j))));
@@ -97,19 +110,25 @@ export const ABILITIES = {
     targets: (s, f) => inRange(f, 3, () => true),
     apply: (s, f, t) => { fx(s, { k: 'arty', from: f, to: t }); areaDamage(s, f, t, 50, 15); } },
   snipe: { name: 'Прицельный выстрел', type: 'active', cd: 2, cost: 2, harm: true,
-    desc: 'Враг на линии до 4 клеток: 40 урона, игнорирует окопы и броню.',
-    targets: (s, f) => line(s, f, ORTH.concat(DIAG), 4).filter((i) => enemyAt(s, f, i)),
+    desc: 'Враг на прямой или диагонали до 6 клеток: 40 урона, игнорирует окопы и броню.',
+    hint: 'Нужен враг на прямой или диагонали до 6 клеток (свою пехоту снайпер простреливает).',
+    area: (s, f) => lineSquares(f, ORTH.concat(DIAG), 6),
+    targets: (s, f) => line(s, f, ORTH.concat(DIAG), 6, true, true).filter((i) => enemyAt(s, f, i)),
     apply: (s, f, t) => { fx(s, { k: 'snipe', from: f, to: t }); damagePiece(s, t, 40, { src: f, side: s.board[f].s, kind: 'direct', pierce: true }); } },
   shell: { name: 'Огонь с места', type: 'active', cd: 2, cost: 2, harm: true,
-    desc: 'Выстрел по прямой до 4 клеток: 55 урона (40 по технике).',
-    targets: (s, f) => line(s, f, ORTH, 4).filter((i) => enemyAt(s, f, i)),
+    desc: 'Выстрел по прямой до 5 клеток поверх своей пехоты: 55 урона (40 по технике).',
+    hint: 'Нужен враг на одной линии с танком (по вертикали или горизонтали) до 5 клеток. Свою пехоту танк простреливает.',
+    area: (s, f) => lineSquares(f, ORTH, 5),
+    targets: (s, f) => line(s, f, ORTH, 5, true, true).filter((i) => enemyAt(s, f, i)),
     apply: (s, f, t) => { fx(s, { k: 'shell', from: f, to: t }); damagePiece(s, t, isVeh(s, s.board[t]) ? 40 : 55, { src: f, side: s.board[f].s, kind: 'direct' }); } },
   ram: { name: 'Таран', type: 'active', cd: 2, cost: 2, harm: true,
-    desc: 'Враг рядом по прямой отброшен на клетку и получает 30. Если некуда — 50.',
-    targets: (s, f) => { const [r, c] = rc(f); return ORTH.filter(([dr, dc]) => inB(r + dr, c + dc)).map(([dr, dc]) => sq(r + dr, c + dc)).filter((i) => enemyAt(s, f, i)); },
+    desc: 'Враг вплотную отброшен на клетку и получает 30. Если некуда — 50.',
+    hint: 'Нужен враг на соседней клетке.',
+    area: (s, f) => around(f),
+    targets: (s, f) => around(f).filter((i) => enemyAt(s, f, i)),
     apply: (s, f, t) => {
       const [r, c] = rc(f), [tr, tc] = rc(t);
-      const nr = tr + (tr - r), nc = tc + (tc - c);
+      const nr = tr + Math.sign(tr - r), nc = tc + Math.sign(tc - c);
       fx(s, { k: 'ram', from: f, to: t });
       const side = s.board[f].s;
       if (inB(nr, nc) && !s.board[sq(nr, nc)]) {
@@ -118,8 +137,10 @@ export const ABILITIES = {
       } else damagePiece(s, t, 50, { src: f, side, kind: 'direct' });
     } },
   rockets: { name: 'Ракетный залп', type: 'active', cd: 3, cost: 3, harm: true,
-    desc: 'Враг в радиусе 2: 45 урона и 15 вокруг.',
-    targets: (s, f) => inRange(f, 2, (i) => enemyAt(s, f, i)),
+    desc: 'Враг в радиусе 3: 45 урона и 15 вокруг.',
+    hint: 'Нужен враг не дальше 3 клеток от вертолёта.',
+    area: (s, f) => inRange(f, 3, () => true),
+    targets: (s, f) => inRange(f, 3, (i) => enemyAt(s, f, i)),
     apply: (s, f, t) => { fx(s, { k: 'rockets', from: f, to: t }); areaDamage(s, f, t, 45, 15); } },
   recon: { name: 'Разведдрон', type: 'active', cd: 3, cost: 1,
     desc: 'Разведка квадрата 5×5 в радиусе 4: вскрывает мины и помечает сильнейшего врага.',
@@ -135,32 +156,39 @@ export const ABILITIES = {
       }
       if (best >= 0) { s.board[best].st.marked = 2; fx(s, { k: 'mark', sq: best }); }
     } },
-  mobilize: { name: 'Мобилизация', type: 'active', cd: 5, cost: 3,
+  mobilize: { name: 'Мобилизация', type: 'active', hint: 'Нужна свободная клетка рядом и место в армии.', cd: 5, cost: 3,
     desc: 'Призвать пехотинца на соседнюю пустую клетку.',
+    area: (s, f) => around(f),
     targets: (s, f) => around(f).filter((i) => !s.board[i]),
     apply: (s, f, t) => { const p = s.board[f]; spawn(s, t, 'P', p.s); addLog(s, `${SIDE_NAME[p.s]}: мобилизация.`); } },
   inspire: { name: 'Боевой дух', type: 'active', cd: 3, cost: 2,
     desc: 'Союзники рядом получают +25% урона в боях на 2 хода.',
+    area: (s, f) => around(f, 1, true),
     targets: (s, f) => [f],
     apply: (s, f) => { for (const i of around(f, 1, true)) if (allyAt(s, f, i)) s.board[i].st.buff = 2; fx(s, { k: 'inspire', sq: f }); } },
-  heal: { name: 'Перевязка', type: 'active', cd: 2, cost: 2,
+  heal: { name: 'Перевязка', type: 'active', hint: 'Нужен раненый союзник рядом (или сам медик ранен).', cd: 2, cost: 2,
     desc: 'Вылечить союзника рядом (или себя) на 45.',
+    area: (s, f) => around(f, 1, true),
     targets: (s, f) => around(f, 1, true).filter((i) => allyAt(s, f, i) && s.board[i].hp < s.board[i].maxHp),
     apply: (s, f, t) => { heal(s, t, 45); } },
   hospital: { name: 'Полевой госпиталь', type: 'active', cd: 4, cost: 3,
     desc: 'Все союзники рядом +25 HP, снимает огонь и газ.',
+    area: (s, f) => around(f, 1, true),
     targets: (s, f) => [f],
     apply: (s, f) => { fx(s, { k: 'hospital', sq: f }); for (const i of around(f, 1, true)) if (allyAt(s, f, i)) heal(s, i, 25); } },
   fortify: { name: 'Укрепление', type: 'active', cd: 2, cost: 2,
     desc: 'Построить ДОТ: союзник рядом окопан и получает +20 HP.',
+    area: (s, f) => around(f, 1, true),
     targets: (s, f) => around(f, 1, true).filter((i) => allyAt(s, f, i)),
     apply: (s, f, t) => { s.board[t].dug = true; heal(s, t, 20); fx(s, { k: 'fortify', sq: t }); } },
-  buildrail: { name: 'Путейцы', type: 'active', cd: 1, cost: 1,
+  buildrail: { name: 'Путейцы', type: 'active', hint: 'Рядом нет клеток для путей.', cd: 1, cost: 1,
     desc: 'Бесплатно проложить ж/д на соседней клетке своей или ничейной территории.',
+    area: (s, f) => around(f, 1, true),
     targets: (s, f) => { const terr = territory(s), p = s.board[f]; return around(f, 1, true).filter((i) => !s.rails[i] && terr[i] !== (p.s === 'w' ? 'b' : 'w')); },
     apply: (s, f, t) => { s.rails[t] = s.board[f].s; fx(s, { k: 'build', sq: t }); } },
   demine: { name: 'Разминирование', type: 'active', cd: 2, cost: 1,
     desc: 'Снять вражеские мины и потушить пожары в радиусе 2.',
+    area: (s, f) => around(f, 2, true),
     targets: (s, f) => [f],
     apply: (s, f) => {
       const p = s.board[f]; let n = 0;
@@ -170,8 +198,9 @@ export const ABILITIES = {
       }
       addLog(s, `${SIDE_NAME[p.s]}: сапёры обезвредили мин: ${n}.`);
     } },
-  laymine: { name: 'Минирование', type: 'active', cd: 2, cost: 1,
+  laymine: { name: 'Минирование', type: 'active', hint: 'Нужна свободная клетка рядом без мины.', cd: 2, cost: 1,
     desc: 'Поставить скрытую мину на соседнюю пустую клетку.',
+    area: (s, f) => around(f),
     targets: (s, f) => around(f).filter((i) => !s.board[i] && !s.mines[i]),
     apply: (s, f, t) => { s.mines[t] = s.board[f].s; } },
   grad: { name: 'Залп «Град»', type: 'active', cd: 3, cost: 4, harm: true,
@@ -191,27 +220,31 @@ export const ABILITIES = {
       }
     } },
   flak: { name: 'Заградогонь', type: 'active', cd: 2, cost: 2, harm: true,
-    desc: 'Все вражеские воздушные цели в радиусе 3 получают 60 урона.',
-    targets: (s, f) => (inRange(f, 3, (i) => enemyAt(s, f, i) && isAir(s, s.board[i])).length ? [f] : []),
+    desc: 'Все вражеские воздушные цели в радиусе 4 получают 60 урона.',
+    hint: 'Нужен вражеский вертолёт или летающий юнит не дальше 4 клеток.',
+    area: (s, f) => inRange(f, 4, () => true),
+    targets: (s, f) => (inRange(f, 4, (i) => enemyAt(s, f, i) && isAir(s, s.board[i])).length ? [f] : []),
     apply: (s, f) => {
       fx(s, { k: 'flak', sq: f });
-      for (const i of inRange(f, 3, (j) => enemyAt(s, f, j) && isAir(s, s.board[j]))) damagePiece(s, i, 60, { src: f, side: s.board[f].s, kind: 'direct' });
+      for (const i of inRange(f, 4, (j) => enemyAt(s, f, j) && isAir(s, s.board[j]))) damagePiece(s, i, 60, { src: f, side: s.board[f].s, kind: 'direct' });
     } },
   ewburst: { name: 'Импульс РЭБ', type: 'active', cd: 4, cost: 2,
     desc: 'На 2 хода вражеские дроны, авиаудары и B-2 в радиусе 2 не наносят урона.',
+    area: (s, f) => around(f, 2, true),
     targets: (s, f) => [f],
     apply: (s, f) => { s.ewZones.push({ sq: f, side: s.board[f].s, t: 2 }); fx(s, { k: 'ew', sq: f }); } },
-  broadside: { name: 'Бортовой залп', type: 'active', cd: 2, cost: 3, harm: true,
+  broadside: { name: 'Бортовой залп', type: 'active', hint: 'Нужен враг не дальше 2 клеток.', cd: 2, cost: 3, harm: true,
     desc: 'Все враги в радиусе 2 получают 25 урона.',
+    area: (s, f) => inRange(f, 2, () => true),
     targets: (s, f) => (inRange(f, 2, (i) => enemyAt(s, f, i)).length ? [f] : []),
     apply: (s, f) => {
       fx(s, { k: 'broadside', sq: f });
       for (const i of inRange(f, 2, (j) => enemyAt(s, f, j))) damagePiece(s, i, 25, { src: f, side: s.board[f].s, kind: 'arty' });
     } },
-  reinforce: { name: 'Вызов подкрепления', type: 'active', cd: 4, cost: 3,
+  reinforce: { name: 'Вызов подкрепления', type: 'active', hint: 'Задний ряд занят.', cd: 4, cost: 3,
     desc: 'Пехотинец прибывает на свободную клетку заднего ряда.',
     targets: (s, f) => { const p = s.board[f], r = p.s === 'w' ? 0 : 7; const out = []; for (let c = 0; c < 8; c++) if (!s.board[sq(r, c)]) out.push(sq(r, c)); return out; },
-    apply: (s, f, t) => { spawn(s, t, 'P', s.board[f].s); fx(s, { k: 'train', to: t }); } },
+    apply: (s, f, t) => { spawn(s, t, 'P', s.board[f].s); fx(s, { k: 'trainArrive', sq: t, side: s.board[f].s }); } },
   napalm: { name: 'Напалм', type: 'active', cd: 3, cost: 3, harm: true,
     desc: 'Поджечь клетку и соседей по ряду (радиус 3): 20 урона и пожар на 2 хода.',
     targets: (s, f) => inRange(f, 3, () => true),
@@ -250,12 +283,16 @@ export const ABILITIES = {
       for (const i of around(t, 1, true)) { const q = s.board[i]; if (q && q.s !== s.board[f].s) stun(s, i, isVeh(s, q) ? 3 : 2); }
     } },
   terror: { name: 'Психатака', type: 'active', cd: 3, cost: 2, harm: true,
-    desc: 'Враг в радиусе 2 в панике и пропускает ход.',
-    targets: (s, f) => inRange(f, 2, (i) => enemyAt(s, f, i)),
+    desc: 'Враг в радиусе 3 в панике и пропускает ход.',
+    hint: 'Нужен враг не дальше 3 клеток.',
+    area: (s, f) => inRange(f, 3, () => true),
+    targets: (s, f) => inRange(f, 3, (i) => enemyAt(s, f, i)),
     apply: (s, f, t) => { fx(s, { k: 'terror', sq: t }); stun(s, t, 2); } },
   hack: { name: 'Взлом', type: 'active', cd: 3, cost: 2, harm: true,
-    desc: 'Враг в радиусе 3: все перезарядки +2, снимает его бонусы.',
-    targets: (s, f) => inRange(f, 3, (i) => enemyAt(s, f, i)),
+    desc: 'Враг в радиусе 4: все перезарядки +2, снимает его бонусы.',
+    hint: 'Нужен враг не дальше 4 клеток.',
+    area: (s, f) => inRange(f, 4, () => true),
+    targets: (s, f) => inRange(f, 4, (i) => enemyAt(s, f, i)),
     apply: (s, f, t) => {
       const q = s.board[t];
       for (const a of unitDef(s, q).actives) q.cds[a] = (q.cds[a] || 0) + 2;
@@ -263,15 +300,18 @@ export const ABILITIES = {
       fx(s, { k: 'hack', sq: t });
     } },
   mark: { name: 'Целеуказание', type: 'active', cd: 2, cost: 1,
-    desc: 'Враг в радиусе 4 помечен на 2 хода: получает +50% урона отовсюду.',
-    targets: (s, f) => inRange(f, 4, (i) => enemyAt(s, f, i)),
+    desc: 'Враг в радиусе 5 помечен на 2 хода: получает +50% урона отовсюду.',
+    hint: 'Нужен враг не дальше 5 клеток.',
+    area: (s, f) => inRange(f, 5, () => true),
+    targets: (s, f) => inRange(f, 5, (i) => enemyAt(s, f, i)),
     apply: (s, f, t) => { s.board[t].st.marked = 2; fx(s, { k: 'mark', sq: t }); } },
   supplydrop: { name: 'Сброс припасов', type: 'active', cd: 3, cost: 2,
     desc: 'Любой союзник: +30 HP и снабжение на 2 хода.',
     targets: (s, f) => { const out = []; for (let i = 0; i < 64; i++) if (allyAt(s, f, i)) out.push(i); return out; },
     apply: (s, f, t) => { fx(s, { k: 'drop', sq: t }); heal(s, t, 30); s.board[t].st.supplied = 2; } },
-  kamikaze: { name: 'Самоподрыв', type: 'active', cd: 0, cost: 3, harm: true,
+  kamikaze: { name: 'Самоподрыв', type: 'active', hint: 'Генерал не может подорвать себя.', cd: 0, cost: 3, harm: true,
     desc: 'Юнит взрывается: 60 урона всем врагам рядом.',
+    area: (s, f) => around(f, 1, true),
     targets: (s, f) => (s.board[f].t === 'K' ? [] : [f]),
     apply: (s, f) => {
       const p = s.board[f];
@@ -281,13 +321,16 @@ export const ABILITIES = {
       addLog(s, `${SIDE_NAME[p.s]}: самоподрыв!`);
       for (const i of hits) damagePiece(s, i, 60, { side: p.s, kind: 'direct' });
     } },
-  swap: { name: 'Рокировка', type: 'active', cd: 2, cost: 1,
+  swap: { name: 'Рокировка', type: 'active', hint: 'Нужен союзник на соседней клетке.', cd: 2, cost: 1,
     desc: 'Поменяться местами с союзником рядом.',
+    area: (s, f) => around(f),
     targets: (s, f) => around(f).filter((i) => allyAt(s, f, i)),
     apply: (s, f, t) => { const a = s.board[f]; s.board[f] = s.board[t]; s.board[t] = a; fx(s, { k: 'swap', from: f, to: t }); } },
   hook: { name: 'Захват', type: 'active', cd: 3, cost: 2, harm: true,
-    desc: 'Притянуть врага с линии (до 3 клеток) вплотную: 15 урона.',
-    targets: (s, f) => line(s, f, ORTH.concat(DIAG), 3).filter((i) => enemyAt(s, f, i) && cheb(i, f) > 1 && !isVeh(s, s.board[i])),
+    desc: 'Притянуть врага с линии (до 4 клеток) вплотную: 15 урона.',
+    hint: 'Нужна вражеская пехота на прямой или диагонали в 2–4 клетках, путь свободен.',
+    area: (s, f) => lineSquares(f, ORTH.concat(DIAG), 4),
+    targets: (s, f) => line(s, f, ORTH.concat(DIAG), 4).filter((i) => enemyAt(s, f, i) && cheb(i, f) > 1 && !isVeh(s, s.board[i])),
     apply: (s, f, t) => {
       const [r, c] = rc(f), [tr, tc] = rc(t);
       const dr = Math.sign(tr - r), dc = Math.sign(tc - c);
@@ -295,8 +338,9 @@ export const ABILITIES = {
       fx(s, { k: 'hook', from: f, to: t });
       if (!s.board[dest]) { s.board[dest] = s.board[t]; s.board[t] = null; damagePiece(s, dest, 15, { src: f, side: s.board[f].s, kind: 'direct' }); }
     } },
-  loot: { name: 'Реквизиция', type: 'active', cd: 3, cost: 1,
+  loot: { name: 'Реквизиция', type: 'active', hint: 'Нужен враг на соседней клетке.', cd: 3, cost: 1,
     desc: 'Если рядом враг — забрать у противника 40 денег.',
+    area: (s, f) => around(f),
     targets: (s, f) => (around(f).some((i) => enemyAt(s, f, i)) ? [f] : []),
     apply: (s, f) => {
       const p = s.board[f];
@@ -306,8 +350,9 @@ export const ABILITIES = {
       s.money[p.s] += take;
       fx(s, { k: 'cash', sq: f, v: take });
     } },
-  propaganda: { name: 'Пропаганда', type: 'active', cd: 5, cost: 4,
+  propaganda: { name: 'Пропаганда', type: 'active', hint: 'Нужен лёгкий враг (ценность до 3) на соседней клетке.', cd: 5, cost: 4,
     desc: 'Лёгкий враг рядом (ценность до 3) с шансом 45% переходит на вашу сторону.',
+    area: (s, f) => around(f),
     targets: (s, f) => around(f).filter((i) => enemyAt(s, f, i) && !['K', 'D'].includes(s.board[i].t) && unitDef(s, s.board[i]).value <= 3),
     apply: (s, f, t) => {
       const p = s.board[f], q = s.board[t];
@@ -317,6 +362,7 @@ export const ABILITIES = {
     } },
   shieldally: { name: 'Щит', type: 'active', cd: 2, cost: 2,
     desc: 'Союзник рядом (или сам) полностью блокирует следующий удар.',
+    area: (s, f) => around(f, 1, true),
     targets: (s, f) => around(f, 1, true).filter((i) => allyAt(s, f, i)),
     apply: (s, f, t) => { s.board[t].st.shield = 1; fx(s, { k: 'shield', sq: t }); } },
   cutrail: { name: 'Подрыв путей', type: 'active', cd: 2, cost: 1, harm: true,
@@ -325,25 +371,29 @@ export const ABILITIES = {
     apply: (s, f, t) => { const side = s.board[f].s; for (const i of around(t, 1, true)) if (s.rails[i] && s.rails[i] !== side) { s.rails[i] = null; fx(s, { k: 'boom', sq: i }); } } },
   trenchline: { name: 'Линия окопов', type: 'active', cd: 3, cost: 2,
     desc: 'Все союзники в этом ряду в пределах 2 клеток окапываются.',
+    area: (s, f) => { const [r, c] = rc(f); const o = []; for (let cc = c - 2; cc <= c + 2; cc++) if (inB(r, cc)) o.push(sq(r, cc)); return o; },
     targets: (s, f) => [f],
     apply: (s, f) => {
       const [r, c] = rc(f);
       for (let cc = c - 2; cc <= c + 2; cc++) { if (!inB(r, cc)) continue; const i = sq(r, cc); if (allyAt(s, f, i)) { s.board[i].dug = true; fx(s, { k: 'dig', sq: i }); } }
     } },
-  repair: { name: 'Ремонт', type: 'active', cd: 2, cost: 2,
+  repair: { name: 'Ремонт', type: 'active', hint: 'Нужна повреждённая техника рядом.', cd: 2, cost: 2,
     desc: 'Техника рядом (или сам) +60 HP.',
+    area: (s, f) => around(f, 1, true),
     targets: (s, f) => around(f, 1, true).filter((i) => allyAt(s, f, i) && isVeh(s, s.board[i]) && s.board[i].hp < s.board[i].maxHp),
     apply: (s, f, t) => { heal(s, t, 60); fx(s, { k: 'repair', sq: t }); } },
-  overdrive: { name: 'Форсаж', type: 'active', cd: 4, cost: 3,
+  overdrive: { name: 'Форсаж', type: 'active', hint: 'Нужно больше 20 HP.', cd: 4, cost: 3,
     desc: '+1 действие в этом ходу и юнит может снова ходить. Стоит 15 HP.',
     targets: (s, f) => (s.board[f].hp > 20 ? [f] : []),
     apply: (s, f) => { const p = s.board[f]; s.actionsLeft += 2; s.movedIds = s.movedIds.filter((x) => x !== p.id); p.hp -= 15; fx(s, { k: 'overdrive', sq: f }); } },
-  march: { name: 'Марш-бросок', type: 'active', cd: 3, cost: 2,
+  march: { name: 'Марш-бросок', type: 'active', hint: 'Нужна свободная клетка в радиусе 2.', cd: 3, cost: 2,
     desc: 'Переместиться на свободную клетку в радиусе 2.',
+    area: (s, f) => inRange(f, 2, () => true),
     targets: (s, f) => inRange(f, 2, (i) => !s.board[i]),
     apply: (s, f, t) => { s.board[t] = s.board[f]; s.board[f] = null; s.board[t].dug = false; fx(s, { k: 'ring', sq: t, c: 'white' }); } },
   rally: { name: 'Сбор', type: 'active', cd: 3, cost: 2,
     desc: 'Сам +30 HP; соседние союзники выходят из оглушения, перезарядки −1.',
+    area: (s, f) => around(f, 1, true),
     targets: (s, f) => [f],
     apply: (s, f) => {
       heal(s, f, 30);
@@ -397,12 +447,31 @@ export function abilityTargetsFor(s, from, id) {
   return a.targets(s, from, p) || [];
 }
 
+// why an ability cannot be used right now (null = usable); used by the UI to explain disabled buttons
+export function abilityBlock(s, from, id) {
+  const p = s.board[from];
+  const a = ABILITIES[id];
+  if (!p || !a) return 'Нет юнита';
+  if (p.stun > 0) return 'Юнит оглушён';
+  if ((p.cds[id] || 0) > 0) return `Перезарядка: ещё ${p.cds[id]} ход.`;
+  if (a.harm && s.effects.ceasefire > 0) return 'Перемирие: удары запрещены';
+  if (!(a.targets(s, from, p) || []).length) return a.hint || 'Нет подходящих целей рядом.';
+  return null;
+}
+
+export function abilityArea(s, from, id) {
+  const a = ABILITIES[id];
+  if (!a) return [];
+  if (a.area) return a.area(s, from);
+  return s.board[from] ? a.targets(s, from, s.board[from]) || [] : [];
+}
+
 export function useAbility(s, from, id, target) {
   const p = s.board[from];
   const a = ABILITIES[id];
   p.cds[id] = a.cd;
   addLog(s, `${SIDE_NAME[p.s]}: ${unitDef(s, p).name} — «${a.name}».`);
-  fx(s, { k: 'ability', id, sq: from, to: target, side: p.s });
+  fx(s, { k: 'ability', ab: id, sq: from, to: target, side: p.s, pid: p.id }); // 'id' is the fx sequence number
   a.apply(s, from, target, p);
   if (a.harm && s.board.includes(p)) gainXp(s, p, 1);
 }

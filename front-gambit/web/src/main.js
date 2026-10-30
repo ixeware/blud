@@ -10,7 +10,7 @@ import {
   inCheck, generalSquare,
 } from './rules.js';
 import { BUILDINGS, BUILDING_IDS, PLOTS, canBuild, canUpgrade, upgradeCost, level as cityLevel } from './city.js';
-import { ABILITIES } from './abilities.js';
+import { ABILITIES, abilityBlock, abilityArea } from './abilities.js';
 import { CARDS, cardTargets } from './cards.js';
 import { EVENTS } from './events.js';
 import { aiChoose } from './ai.js';
@@ -28,7 +28,7 @@ const $ = (id) => document.getElementById(id);
 const show = (el, on = true) => (typeof el === 'string' ? $(el) : el).classList.toggle('hidden', !on);
 
 // ---------- settings ----------
-const settings = { diff: 1, duel: 'manual', gfx: 'high', music: 60, sfx: 80, cine: true, assist: true };
+const settings = { diff: 1, duel: 'manual', gfx: 'high', music: 60, sfx: 80, cine: true, assist: true, vibro: true };
 try { Object.assign(settings, JSON.parse(localStorage.getItem('fg-settings2') || '{}')); } catch (e) { /* ignore */ }
 function saveSettings() { try { localStorage.setItem('fg-settings2', JSON.stringify(settings)); } catch (e) { /* ignore */ } }
 const bindSet = (id, key, conv = (v) => v, prop = 'value') => {
@@ -43,6 +43,7 @@ bindSet('setMusic', 'music', Number);
 bindSet('setSfx', 'sfx', Number);
 bindSet('setCine', 'cine', Boolean, 'checked');
 bindSet('setAssist', 'assist', Boolean, 'checked');
+bindSet('setVibro', 'vibro', Boolean, 'checked');
 
 // ---------- renderer ----------
 const canvas = $('gl');
@@ -67,9 +68,9 @@ board.lowGfx = settings.gfx !== 'high';
 const duel = new DuelView(renderer);
 const workshop = new Workshop(renderer, { onClose: () => { show('menu'); playMusic('menu'); }, sfx });
 board.onSound = (n) => sfx(n);
-board.onCine = (on) => { $('letterbox').classList.toggle('on', on); $('hud').classList.toggle('cine', on); };
+board.onCine = (on) => { $('letterbox').classList.toggle('on', on); $('letterbox').classList.toggle('skip', on && !app.rtView); $('hud').classList.toggle('cine', on); };
 const controls = new Controls();
-controls.bindSticks($('stickL'), $('stickR'), $('abBtn'), $('reloadBtn'));
+controls.bindSticks($('stickL'), $('stickR'), $('abBtn'), $('reloadBtn'), $('zoneL'), $('zoneR'));
 controls.bindMouse(canvas, () => app.rtView === 'duel');
 
 function applySettings() {
@@ -79,6 +80,7 @@ function applySettings() {
   setVolumes(settings.music / 100, settings.sfx / 100);
   board.cineEnabled = settings.cine;
   controls.aimAssist = settings.assist;
+  duel.haptics = settings.vibro;
   resize();
 }
 function resize() {
@@ -95,7 +97,7 @@ window.addEventListener('resize', resize);
 // ---------- app state ----------
 const app = {
   mode: null, state: null, net: null, mySide: 'w',
-  sim: null, simKind: null, rtView: null, intro: 0, sel: -1, targeting: null,
+  sim: null, simKind: null, rtView: null, intro: 0, sel: -1, targeting: null, preview: null, confirm: null,
   aiTimer: null, remoteInput: null, sendAcc: 0, pendingEv: [], pendingOd: [],
   lastTurnSeen: null, lastLogLen: 0, popupSeen: 0, setup: { map: 'field', events: true, cards: true, custom: true }, pendingMode: null,
 };
@@ -180,7 +182,18 @@ function customDefsForGame() {
 }
 
 // ---------- online lobby ----------
+// bumped whenever rules or messages change: players on different builds get a clear warning
+const PROTO = 22;
+const VERSION = '2.2';
+function versionWarning(v) {
+  if (v === PROTO || app.verWarned) return;
+  app.verWarned = true;
+  const theirs = v ? `v${Math.floor(v / 10)}.${v % 10}` : 'старая версия';
+  banner('РАЗНЫЕ ВЕРСИИ', `У соперника ${theirs}, у вас v${VERSION}. Обновите APK у обоих`, 4500);
+  sfx('error');
+}
 function openLobby(isHost) {
+  app.verWarned = false;
   show('menu', false);
   show('lobby');
   show('hostBox', isHost);
@@ -204,7 +217,7 @@ function openLobby(isHost) {
       $('joinStatus').textContent = 'Подключение…';
       net.join(c, (err) => { $('joinStatus').textContent = 'Ошибка: ' + err; });
     };
-    net.onOpen = () => { $('joinStatus').textContent = 'Подключено! Ожидание данных…'; net.send({ t: 'hello', defs: loadLibrary() }); };
+    net.onOpen = () => { $('joinStatus').textContent = 'Подключено! Ожидание данных…'; net.send({ t: 'hello', v: PROTO, defs: loadLibrary() }); };
   }
   net.onMessage = onNetMessage;
   net.onClose = () => {
@@ -222,10 +235,12 @@ function onNetMessage(m) {
     else if (m.t === 'inp') app.remoteInput = m.i;
     else if (m.t === 'hello') {
       if (app.setup.custom && m.defs) Object.assign(app.state.customDefs, m.defs);
+      versionWarning(m.v);
       pushState();
     }
   } else {
     if (m.t === 'state') {
+      versionWarning(m.v);
       if (app.mode !== 'guest') startGame('guest', m.s);
       else { app.state = m.s; onStateChange(); }
     } else if (m.t === 'snap') {
@@ -236,7 +251,7 @@ function onNetMessage(m) {
   }
 }
 
-function pushState() { if (app.mode === 'host' && app.net) app.net.send({ t: 'state', s: app.state }); }
+function pushState() { if (app.mode === 'host' && app.net) app.net.send({ t: 'state', v: PROTO, s: app.state }); }
 
 // ---------- game start ----------
 function startGame(mode, guestState) {
@@ -437,26 +452,54 @@ function updateInfo() {
   if (f && f.gas) tags.push('st_gas');
   if (f && f.smoke) tags.push('st_smoke');
   $('infoTags').innerHTML = tags.map((t) => ico(A.icon(t))).join('');
-  const own = myTurn() && p.s === actingSide();
+  const mine = p.s === actingSide();
   const row = $('abRow');
   row.innerHTML = '';
   for (const ab of abilityList(s, app.sel)) {
     const A2 = ABILITIES[ab.id];
+    const from = app.sel;
+    // a disabled <button> swallows taps, so unusable slots stay clickable and explain why
+    const reason = !mine ? 'Это юнит противника — показана зона действия.'
+      : !myTurn() ? 'Сейчас ход противника.'
+      : s.actionsLeft <= 0 ? 'В этом ходу не осталось действий.'
+      : abilityBlock(s, from, ab.id);
     const b = document.createElement('button');
-    b.className = 'ab-slot';
+    b.className = 'ab-slot ' + (reason ? 'off' : 'ready');
     b.innerHTML = `${ico(A.ab(ab.id))}${ab.cd > 0 ? `<span class="cdn">${ab.cd}</span>` : ''}`;
-    b.disabled = !own || !ab.targets.length || s.actionsLeft <= 0;
     b.onclick = () => {
-      $('infoDesc').textContent = `${A2.name}: ${A2.desc}`;
-      if (b.disabled) { sfx('error'); return; }
+      if (reason) {
+        $('infoDesc').textContent = `${A2.name}: ${A2.desc} ${reason}`;
+        if (mine) { toast(`${A2.name}: ${reason}`); sfx('error'); } else sfx('select');
+        previewArea(from, ab.id);
+        return;
+      }
+      // abilities that only target the unit itself fire at once; self-destruct asks for a second tap
+      if (ab.targets.length === 1 && ab.targets[0] === from) {
+        if (ab.id === 'kamikaze' && !(app.confirm && app.confirm.id === ab.id && app.confirm.from === from && performance.now() < app.confirm.until)) {
+          app.confirm = { id: ab.id, from, until: performance.now() + 2500 };
+          toast('Самоподрыв: нажмите ещё раз для подтверждения');
+          sfx('alarm');
+          previewArea(from, ab.id);
+          return;
+        }
+        app.confirm = null;
+        sfx('click');
+        app.sel = -1;
+        app.preview = null;
+        sendCmd({ c: 'ability', from, id: ab.id, target: from });
+        updateHighlights();
+        updateInfo();
+        return;
+      }
       sfx('click');
-      app.targeting = { kind: 'ability', from: app.sel, id: ab.id, targets: ab.targets };
-      $('targetText').textContent = `${A2.name}: выберите цель`;
+      app.preview = null;
+      app.targeting = { kind: 'ability', from, id: ab.id, targets: ab.targets, area: abilityArea(s, from, ab.id) };
+      $('targetText').textContent = `${A2.name}: выберите цель (${ab.targets.length})`;
       show('targetBar');
       updateHighlights();
       updateInfo();
     };
-    b.onpointerenter = () => { $('infoDesc').textContent = `${A2.name}: ${A2.desc}`; };
+    b.onpointerenter = () => { $('infoDesc').textContent = `${A2.name}: ${A2.desc}${reason ? ' ' + reason : ''}`; };
     row.appendChild(b);
   }
   for (const id of d.passives) {
@@ -482,8 +525,13 @@ function updateHighlights() {
   const hl = [];
   if (s.lastMove) { hl.push({ sq: s.lastMove.from, kind: 'last' }); hl.push({ sq: s.lastMove.to, kind: 'last' }); }
   if (app.targeting) {
-    for (const t of app.targeting.targets) hl.push({ sq: t, kind: 'target' });
-    if (app.targeting.from >= 0) hl.push({ sq: app.targeting.from, kind: app.targeting.targets.includes(app.targeting.from) ? 'target' : 'select' });
+    const T = app.targeting;
+    for (const a of T.area || []) if (!T.targets.includes(a) && a !== T.from) hl.push({ sq: a, kind: 'area' });
+    for (const t of T.targets) hl.push({ sq: t, kind: 'target' });
+    if (T.from >= 0) hl.push({ sq: T.from, kind: T.targets.includes(T.from) ? 'target' : 'select' });
+  } else if (app.preview && app.preview.from === app.sel) {
+    for (const a of app.preview.area) hl.push({ sq: a, kind: 'area' });
+    hl.push({ sq: app.sel, kind: 'select' });
   } else if (app.sel >= 0 && s.board[app.sel]) {
     hl.push({ sq: app.sel, kind: 'select' });
     const p = s.board[app.sel];
@@ -492,6 +540,15 @@ function updateHighlights() {
     }
   }
   board.setHighlights(hl);
+}
+
+// briefly show an ability's reach on the board (also for enemy units and abilities on cooldown)
+function previewArea(from, id) {
+  const pv = { from, area: abilityArea(app.state, from, id) };
+  app.preview = pv;
+  updateHighlights();
+  clearTimeout(previewArea.tm);
+  previewArea.tm = setTimeout(() => { if (app.preview === pv) { app.preview = null; updateHighlights(); } }, 2600);
 }
 
 function toast(msg) {
@@ -781,6 +838,7 @@ const endPointer = (e) => {
   const t = touches.get(e.pointerId);
   touches.delete(e.pointerId);
   if (!t || app.rtView || workshop.active) return;
+  if (gesture && !gesture.moved && !gesture.multi && touches.size === 0 && board.cineOn && board.skipCinematic()) { gesture = null; return; }
   if (gesture && !gesture.moved && !gesture.multi && touches.size === 0) {
     const nx = (e.clientX / innerWidth) * 2 - 1, ny = -(e.clientY / innerHeight) * 2 + 1;
     if (app.cityMode) { const hit = board.pickPlot(nx, ny); if (hit && hit.side === actingSide()) { sfx('select'); app.cityPlot = hit.plot; renderCity(); } }
@@ -881,6 +939,7 @@ function startRealtime() {
     show('hud', false);
     show('droneHud');
     show('sticks', local);
+    $('sticks').classList.add('drone');
     show('stickR', false);
     show('reloadBtn', false);
     show('spectate', false);
@@ -910,6 +969,7 @@ function updateRtStage(now) {
     show('vs', false);
     show('duelHud');
     show('sticks', !!lt);
+    $('sticks').classList.remove('drone');
     show('stickR', true);
     show('reloadBtn', !!lt);
     show('ammo', !!lt);

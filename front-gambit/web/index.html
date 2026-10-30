@@ -8,7 +8,7 @@
 </head>
 <body>
 <canvas id="gl"></canvas>
-<div id="letterbox" class="letterbox"><div class="lb-top"></div><div class="lb-bot"></div></div>
+<div id="letterbox" class="letterbox"><div class="lb-top"></div><div class="lb-bot"><span class="lb-skip">Коснитесь экрана — пропустить</span></div></div>
 
 <!-- MAIN MENU -->
 <div id="menu" class="screen menu-bg">
@@ -45,9 +45,10 @@
       <label>Звуки <input type="range" id="setSfx" min="0" max="100" value="80"></label>
       <label class="row"><input type="checkbox" id="setCine" checked> Катсцены</label>
       <label class="row"><input type="checkbox" id="setAssist" checked> Помощь в прицеливании</label>
+      <label class="row"><input type="checkbox" id="setVibro" checked> Вибрация</label>
     </div>
   </div>
-  <div class="ver">v2.1 · онлайн через бесплатный сервер PeerJS</div>
+  <div class="ver">v2.2 · онлайн через бесплатный сервер PeerJS</div>
 </div>
 
 <!-- MATCH SETUP -->
@@ -193,8 +194,8 @@
 <div id="sabo" class="screen dim hidden">
   <div class="panel center">
     <div class="plaque">Цель диверсии</div>
-    <button class="btn big" data-sabo="factory"><img class="px" src="assets/icons/factory.png" alt="">Взорвать завод (55%)</button>
-    <button class="btn big" data-sabo="rail"><img class="px" src="assets/icons/shop_rail.png" alt="">Подорвать железные дороги</button>
+    <button class="btn big" data-sabo="factory"><img class="px" src="assets/icons/factory.png" alt="">Удар по зданию (40%, −70 прочности)</button>
+    <button class="btn big" data-sabo="rail"><img class="px" src="assets/icons/shop_rail.png" alt="">Подорвать 2 участка ж/д</button>
     <button class="btn ghost" data-close>Отмена</button>
   </div>
 </div>
@@ -243,6 +244,8 @@
 
 <!-- STICKS -->
 <div id="sticks" class="hidden">
+  <div class="stick-zone left" id="zoneL"></div>
+  <div class="stick-zone right" id="zoneR"></div>
   <div class="stick left" id="stickL"><div class="knob"></div><div class="stick-label">ДВИЖЕНИЕ</div></div>
   <div class="stick right" id="stickR"><div class="knob"></div><div class="stick-label">ОГОНЬ</div></div>
   <button class="ability" id="abBtn"><img class="px" id="abIcon" src="" alt=""><span id="abName">Граната</span><div id="abCd" class="cd"></div></button>

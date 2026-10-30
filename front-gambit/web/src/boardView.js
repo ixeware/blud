@@ -9,6 +9,7 @@ import { FX } from './fx.js';
 import { territory, supplyMap, rc, unitDef } from './rules.js';
 import { hasPassive } from './core.js';
 import { A, img } from './assets.js';
+import { ABILITIES } from './abilities.js';
 
 const CINE_SLOW = 1.7;
 // time of day: city fights are overcast, field battles happen by day or at sunset, blackouts are at night
@@ -17,7 +18,18 @@ export function lightPreset(state) {
   if (state.map === 'city') return 'overcast';
   return (state.seed || 0) % 3 === 0 ? 'sunset' : 'day';
 }
-const HL_COLORS = { move: 0x4cff6a, capture: 0xff3b30, rail: 0x3fb6ff, metro: 0xd64bff, target: 0xffc93c, select: 0xffffff, last: 0xffe9a0 };
+// how a piece moves when it uses an ability
+const ABILITY_ANIM = {
+  shell: 'recoil', snipe: 'recoil', rockets: 'recoil', grad: 'recoil', barrage: 'recoil', flak: 'recoil', broadside: 'recoil',
+  smoke: 'recoil', gas: 'recoil', napalm: 'recoil', arty: 'cast', recon: 'cast', mark: 'cast', hack: 'cast', terror: 'cast', emp: 'cast',
+  ram: 'lunge', raid: 'lunge', hook: 'lunge', loot: 'lunge', propaganda: 'lunge',
+  dig: 'dig', fortify: 'dig', trenchline: 'dig', laymine: 'dig', buildrail: 'dig', demine: 'dig', ambush: 'dig', cutrail: 'dig',
+  march: 'hop', paradrop: 'hop', swap: 'hop', inspire: 'hop', rally: 'hop', overdrive: 'spin', kamikaze: 'spin',
+};
+// targeted abilities that get an over-the-shoulder camera (area strikes already have their own shots)
+const SHOULDER = new Set(['shell', 'snipe', 'raid', 'ram', 'hook', 'hack', 'terror', 'mark', 'propaganda', 'napalm', 'gas', 'emp', 'smoke', 'recon', 'cutrail', 'heal', 'supplydrop']);
+
+const HL_COLORS = { move: 0x4cff6a, capture: 0xff3b30, rail: 0x3fb6ff, metro: 0xd64bff, target: 0xffc93c, select: 0xffffff, last: 0xffe9a0, area: 0x7fb8ff };
 
 export class BoardView {
   constructor(renderer) {
@@ -455,7 +467,7 @@ export class BoardView {
       const m = this.hlMeshes[h.sq];
       m.visible = true;
       m.material.color.setHex(HL_COLORS[h.kind] || 0xffffff);
-      m.material.opacity = h.kind === 'select' ? 0.55 : h.kind === 'last' ? 0.22 : 0.45;
+      m.material.opacity = h.kind === 'select' ? 0.55 : h.kind === 'last' ? 0.22 : h.kind === 'area' ? 0.2 : 0.45;
       m.userData.kind = h.kind;
     }
   }
@@ -614,7 +626,7 @@ export class BoardView {
     for (const e of state.fx) {
       if (e.id <= this.lastFx) continue;
       this.lastFx = e.id;
-      this.playFx(e, state);
+      try { this.playFx(e, state); } catch (err) { console.error('fx', e.k, err); }
     }
   }
 
@@ -841,7 +853,29 @@ export class BoardView {
     switch (e.k) {
       case 'boom': this.boom(W(e.sq, 0.4), e.big ? 2.2 : 1.3); break;
       case 'mine': this.boom(W(e.sq, 0.4), 1.6); this.cinematic([this.orbitShot(W(e.sq, 0), 10, 6, 1.2)]); break;
-      case 'dmg': { const p = W(e.sq, 3.6); F.text(p.x, p.y, p.z, '-' + e.v); break; }
+      case 'dmg': { const p = W(e.sq, 3.6); F.text(p.x, p.y, p.z, '-' + e.v); const ent = this.entryAt(e.sq); if (ent) ent.hitT = 0.45; break; }
+      case 'ability': {
+        const ent = (e.pid !== undefined && this.pieceMeshes.get(e.pid)) || this.entryAt(e.sq);
+        const a = W(e.sq, 0);
+        const tgt = e.to !== undefined && e.to !== null && e.to >= 0 && e.to !== e.sq ? W(e.to, 0) : null;
+        if (ent) {
+          if (tgt) { ent.aimFace = Math.atan2(-(tgt.z - a.z), tgt.x - a.x); ent.aimT = 2.2; }
+          ent.anim = { kind: ABILITY_ANIM[e.ab] || 'cast', t: 0, dur: 0.8, delay: tgt ? 0.25 : 0 };
+        }
+        const name = ABILITIES[e.ab] ? ABILITIES[e.ab].name.toUpperCase() : '';
+        F.text(a.x, 5.6, a.z, name, '#fee761', 2.2);
+        F.ring(a.x, a.z, TEAM_COLORS[e.side] ? TEAM_COLORS[e.side].main : 0xfee761, 2.4, 0.7);
+        if (tgt) {
+          F.ring(tgt.x, tgt.z, 0xfee761, 2.2, 1.1);
+          if (SHOULDER.has(e.ab)) {
+            const dir = tgt.clone().sub(a).normalize();
+            const off = new THREE.Vector3(-dir.z, 0, dir.x).multiplyScalar(2.6);
+            const cam = a.clone().addScaledVector(dir, -9).add(off).setY(6.5);
+            this.cinematic([{ pos: cam, pos2: cam.clone().addScaledVector(dir, 3), look: a.clone().lerp(tgt, 0.55).setY(1), dur: 1.25 }]);
+          }
+        }
+        break;
+      }
       case 'heal': { const p = W(e.sq, 3.6); F.text(p.x, p.y, p.z, '+' + e.v, '#63c74d'); F.ring(p.x, p.z, 0x63c74d, 2); S('heal'); break; }
       case 'cash': { const p = W(e.sq, 3.6); F.text(p.x, p.y, p.z, '+' + e.v, '#fee761'); S('cash'); break; }
       case 'arty': {
@@ -868,10 +902,16 @@ export class BoardView {
       }
       case 'shell': case 'snipe': {
         const a = W(e.from, 1.6), b = W(e.to, 1.2);
-        S(e.k === 'snipe' ? 'sniper' : 'cannon');
-        F.muzzle(a.x, a.y, a.z, e.k === 'snipe' ? 0.4 : 0.9);
-        F.tracer(a, b, e.k === 'snipe' ? 0xffffff : 0xffcc66);
-        if (e.k === 'shell') setTimeout(() => this.boom(b, 1.1), 120); else F.spark(b.x, b.y, b.z, 0xff4444);
+        const go = () => {
+          S(e.k === 'snipe' ? 'sniper' : 'cannon');
+          F.muzzle(a.x, a.y, a.z, e.k === 'snipe' ? 0.6 : 1.3);
+          F.tracer(a, b, e.k === 'snipe' ? 0xffffff : 0xffcc66, e.k === 'snipe' ? 0.12 : 0.22, 0.35);
+          F.smoke(a.x, a.y, a.z, 0x8a8a8a, 0.6);
+          if (e.k === 'shell') setTimeout(() => this.boom(b, 1.5), 120);
+          else { F.spark(b.x, b.y, b.z, 0xff4444); F.blood(b.x, b.z); }
+          this.kick = 0.35;
+        };
+        if (this.cineEnabled && !this.cityView) setTimeout(go, 650); else go();
         break;
       }
       case 'rockets': {
@@ -1048,7 +1088,16 @@ export class BoardView {
     }
   }
 
-  pieceAt(i) { for (const [, e] of this.pieceMeshes) if (e.group.userData.sq === i) return e.model; return null; }
+  pieceAt(i) { const e = this.entryAt(i); return e ? e.model : null; }
+  entryAt(i) { for (const [, e] of this.pieceMeshes) if (e.group.userData.sq === i) return e; return null; }
+
+  // tap during a cutscene: jump back to the normal board camera
+  skipCinematic() {
+    if (!this.shots.length) return false;
+    this.shots = [];
+    this.lookCur = this.camera.position.clone().add(new THREE.Vector3(0, -10, this.viewSide === 'w' ? -10 : 10));
+    return true;
+  }
 
   jetModel(color) {
     const jet = new THREE.Group();
@@ -1088,6 +1137,38 @@ export class BoardView {
     });
   }
 
+  // ability poses (recoil, lunge, hop, dig, spin) and hit shake layered over the idle pose
+  animatePiece(e, dt) {
+    const m = e.model;
+    if (e.aimT > 0) { e.aimT -= dt; m.rotation.y += (e.aimFace - m.rotation.y) * Math.min(1, dt * 9); }
+    if (!e.anim && !(e.hitT > 0) && !e.animDirty) return;
+    let ox = 0, oy = 0, oz = 0;
+    const A = e.anim;
+    if (A) {
+      if (A.delay > 0) A.delay -= dt;
+      else {
+        A.t += dt;
+        const k = Math.min(1, A.t / A.dur), s = Math.sin(k * Math.PI);
+        const fx = Math.cos(m.rotation.y), fz = -Math.sin(m.rotation.y);
+        if (A.kind === 'recoil') { const r = k < 0.12 ? (k / 0.12) * 0.6 : 0.6 * (1 - (k - 0.12) / 0.88); ox = -fx * r; oz = -fz * r; oy = r * 0.15; }
+        else if (A.kind === 'lunge') { ox = fx * s * 1.4; oz = fz * s * 1.4; oy = s * 0.35; }
+        else if (A.kind === 'hop') oy = s * 1.3;
+        else if (A.kind === 'dig') oy = -s * 0.4 + Math.sin(k * Math.PI * 6) * 0.05;
+        else if (A.kind === 'spin') { m.rotation.y += dt * 16 * (1 - k); oy = s * 0.4; }
+        else oy = s * 0.6;
+        if (k >= 1) e.anim = null;
+      }
+    }
+    if (e.hitT > 0) {
+      e.hitT -= dt;
+      const h = Math.max(0, e.hitT) / 0.45;
+      ox += Math.sin(this.time * 75) * 0.2 * h;
+      oz += Math.cos(this.time * 61) * 0.14 * h;
+    }
+    m.position.set(ox, 0.32 + oy, oz);
+    e.animDirty = !!(e.anim || e.hitT > 0);
+  }
+
   update(dt) {
     this.time += dt;
     for (const [, e] of this.pieceMeshes) {
@@ -1101,9 +1182,10 @@ export class BoardView {
           if (e.t !== 'Q' && dist > 0.3) g.position.y = Math.abs(Math.sin(this.time * 18)) * 0.15;
         } else {
           g.position.y = 0;
-          e.model.rotation.y += (e.face - e.model.rotation.y) * Math.min(1, dt * 3);
+          if (!(e.aimT > 0)) e.model.rotation.y += (e.face - e.model.rotation.y) * Math.min(1, dt * 3);
         }
       }
+      this.animatePiece(e, dt);
       const ud = e.model.userData;
       if (ud.rotor) ud.rotor.rotation.y += dt * 25;
       if (ud.tailRotor) ud.tailRotor.rotation.z += dt * 40;
@@ -1157,7 +1239,7 @@ export class BoardView {
       for (const [, e] of this.pieceMeshes) if (e.t === 'T' && Math.random() < 0.5) { const p = e.group.position; this.fx.smoke(p.x + 1, 2.2, p.z, 0x555555, 0.35); }
     }
     if (this.frontMat) this.frontMat.opacity = 0.55 + Math.sin(this.time * 4) * 0.35;
-    for (const m of this.hlMeshes) if (m.visible && m.userData.kind !== 'last') m.position.y = 0.34 + Math.sin(this.time * 5) * 0.02;
+    for (const m of this.hlMeshes) if (m.visible && m.userData.kind !== 'last' && m.userData.kind !== 'area') m.position.y = 0.34 + Math.sin(this.time * 5) * 0.02;
     const hideSprites = !!this.droneSnap || this.cineOn;
     if (hideSprites !== this.spritesHidden) {
       this.spritesHidden = hideSprites;
@@ -1175,5 +1257,11 @@ export class BoardView {
     } else if (this.droneMesh) { this.scene.remove(this.droneMesh); this.droneMesh = null; }
     this.fx.update(dt);
     this.updateCamera();
+    if (this.kick > 0 && !this.droneSnap) {
+      this.kick -= dt;
+      const k = Math.max(0, this.kick);
+      this.camera.position.x += (Math.random() - 0.5) * k * 0.9;
+      this.camera.position.y += (Math.random() - 0.5) * k * 0.6;
+    }
   }
 }

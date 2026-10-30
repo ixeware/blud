@@ -8,12 +8,17 @@ import { plotPos, level } from './city.js';
 export const DRONE_BATTERY = 20;
 const SPEED = 10;
 
+// hit volumes measured from the board models (soldiers stand ~2.7 tall incl. helmet and backpack)
 export function pieceTop(t, air) {
-  if (t === 'Q' || air) return 3.6;
-  return { R: 2.0, A: 2.3, L: 2.5, T: 2.7 }[t] || 2.1;
+  if (t === 'Q' || air) return 3.3;
+  return { R: 3.1, A: 2.7, L: 2.2, T: 2.2 }[t] || 3.0;
 }
 export function pieceBottom(t, air) {
-  return t === 'Q' || air ? 1.6 : 0;
+  return t === 'Q' || air ? 1.1 : 0;
+}
+export function pieceRadius(t, air) {
+  if (t === 'Q' || air) return 2.1;
+  return { R: 2.1, A: 1.9, L: 1.9, T: 2.0, K: 1.7 }[t] || 1.5;
 }
 
 export class DroneSim {
@@ -123,7 +128,7 @@ export class DroneSim {
     for (const p of this.pieces) {
       if (p.s === this.side) continue;
       const d = Math.hypot(p.x - this.x, p.z - this.z);
-      if (d < 1.4 && this.y < pieceTop(p.t, p.air) && this.y > pieceBottom(p.t, p.air) - 0.3) {
+      if (d < pieceRadius(p.t, p.air) && this.y < pieceTop(p.t, p.air) + 0.2 && this.y > pieceBottom(p.t, p.air) - 0.3) {
         return this.explodeAt(p);
       }
     }

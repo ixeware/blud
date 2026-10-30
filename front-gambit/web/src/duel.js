@@ -6,12 +6,12 @@ const HW = ARENA.w / 2, HD = ARENA.d / 2;
 export const DUEL_TIME = 75;
 
 // duel HP = board HP x multiplier (keeps fights 10-25 s long)
-const HP_MUL = { P: 1.4, N: 1.6, B: 1.5, R: 2.2, Q: 2.0, K: 2.0, M: 1.5, E: 1.6, A: 2.0, L: 2.0, T: 2.0, D: 2.0, C: 1.8 };
+const HP_MUL = { P: 1.4, N: 1.8, B: 1.5, R: 2.2, Q: 2.0, K: 2.0, M: 1.5, E: 1.6, A: 2.0, L: 2.0, T: 2.0, D: 2.0, C: 1.8 };
 
 export const WEAPONS = {
   pistol: { dmg: 14, rate: 0.32, spd: 36, spread: 0.05, range: 20, mag: 12, reload: 1.1, kind: 'b' },
   rifle: { dmg: 7, rate: 0.13, spd: 40, spread: 0.06, range: 24, mag: 30, reload: 1.8, kind: 'b' },
-  smg: { dmg: 5, rate: 0.075, spd: 38, spread: 0.11, range: 16, mag: 35, reload: 1.6, kind: 'b' },
+  smg: { dmg: 6, rate: 0.075, spd: 40, spread: 0.08, range: 18, mag: 35, reload: 1.5, kind: 'b' },
   shotgun: { dmg: 6, rate: 0.75, spd: 34, spread: 0.26, range: 11, mag: 6, reload: 2.2, kind: 'b', pellets: 7 },
   sniper: { dmg: 70, rate: 1.2, spd: 90, spread: 0.004, range: 45, mag: 5, reload: 2.4, kind: 's', crit: 0.25 },
   mg: { dmg: 6, rate: 0.09, spd: 38, spread: 0.08, range: 22, mag: 80, reload: 3.0, kind: 'b' },
@@ -23,7 +23,7 @@ export const WEAPONS = {
 // body stats per duel kind
 export const BODIES = {
   P: { r: 0.55, speed: 5.0, pref: 9 },
-  N: { r: 0.55, speed: 6.4, pref: 5 },
+  N: { r: 0.55, speed: 7.0, pref: 6, armor: 0.85 }, // spec-ops: body armour, fastest infantry
   B: { r: 0.55, speed: 4.6, pref: 16 },
   R: { r: 1.45, speed: 3.8, pref: 10, armor: 0.55, vehicle: true },
   Q: { r: 1.3, speed: 7.0, pref: 7, air: true, vehicle: true },
@@ -41,7 +41,7 @@ export const BODIES = {
 
 export const SPECIALS = {
   d_grenade: { cd: 5, name: 'Граната' },
-  d_dash: { cd: 2.5, name: 'Рывок' },
+  d_dash: { cd: 2.0, name: 'Рывок' },
   d_artycall: { cd: 9, name: 'Артналёт' },
   d_cannon: { cd: 2.2, name: 'Пушка' },
   d_rocketpods: { cd: 5.5, name: 'НУРСы' },
@@ -320,9 +320,11 @@ export class DuelSim {
       let da = Math.abs(((angle + Math.PI - u.aim) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI);
       if (da < 1.2) d *= 0.1;
     }
-    if (src && src.crit) d *= src.critMul;
+    // headshots only land on soldiers: vehicles, aircraft and turrets have no head
+    const crit = !!(src && src.crit) && !u.vehicle && !u.air && u.kind !== 'U';
+    if (crit) d *= src.critMul;
     u.hp -= d;
-    this.events.push({ k: src && src.crit ? 'crit' : 'hit', x: u.x, z: u.z, id: u.id, v: Math.round(d), veh: u.vehicle });
+    this.events.push({ k: crit ? 'crit' : 'hit', x: u.x, z: u.z, id: u.id, v: Math.round(d), veh: u.vehicle || u.kind === 'U' });
     if (u.hp <= 0) {
       u.hp = 0;
       u.alive = false;

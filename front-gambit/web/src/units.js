@@ -3,7 +3,7 @@
 export const UNITS = {
   P: { name: 'Пехотинец', hp: 100, value: 1, move: 'pawn', weapon: 'rifle', duel: 'd_grenade', actives: ['dig', 'ambush'], passives: [],
     desc: 'Основа армии. Окапывается и устраивает засады.' },
-  N: { name: 'Спецназ', hp: 120, value: 3, move: 'knight', weapon: 'smg', duel: 'd_dash', actives: ['raid', 'paradrop'], passives: [],
+  N: { name: 'Спецназ', hp: 140, value: 3, move: 'knight', weapon: 'smg', duel: 'd_dash', actives: ['raid', 'paradrop'], passives: [],
     desc: 'Ходит конём. Рейды в тыл и десант.' },
   B: { name: 'Снайпер', hp: 90, value: 3, move: 'bishop', weapon: 'sniper', duel: 'd_artycall', actives: ['arty', 'snipe'], passives: ['stealth'],
     desc: 'Ходит по диагонали. Наводит артиллерию, бьёт издалека, маскируется.' },

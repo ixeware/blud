@@ -1,16 +1,29 @@
 // Touch twin-stick + keyboard/mouse input for real-time phases.
 
 export class Stick {
-  constructor(el) {
+  // `zone`: a larger touch area; a touch there makes the stick jump under the finger (floating stick)
+  constructor(el, zone) {
     this.el = el;
     this.knob = el.querySelector('.knob');
     this.x = 0; this.y = 0; this.active = false; this.id = null;
+    this.cx = 0; this.cy = 0; this.rad = 1;
     // last meaningful direction, kept after release so aim never snaps back
     this.lastX = 0; this.lastY = 0;
-    const start = (e) => {
+    const start = (e, floating) => {
+      if (this.active) return;
       const t = e.changedTouches ? e.changedTouches[0] : e;
       this.id = e.changedTouches ? t.identifier : 'mouse';
       this.active = true;
+      const r = this.el.getBoundingClientRect();
+      const half = r.width / 2 || 60;
+      if (floating) {
+        const x = Math.max(half + 4, Math.min(innerWidth - half - 4, t.clientX));
+        const y = Math.max(half + 4, Math.min(innerHeight - half - 4, t.clientY));
+        Object.assign(this.el.style, { left: `${x - half}px`, top: `${y - half}px`, right: 'auto', bottom: 'auto' });
+        this.el.classList.add('floating');
+        this.cx = x; this.cy = y;
+      } else { this.cx = r.left + half; this.cy = r.top + r.height / 2; }
+      this.rad = half;
       this.move(t);
       e.preventDefault();
       e.stopPropagation();
@@ -24,30 +37,40 @@ export class Stick {
     const end = (e) => {
       const list = e.changedTouches ? [...e.changedTouches] : [e];
       for (const t of list) {
-        if ((e.changedTouches ? t.identifier : 'mouse') === this.id) {
-          this.active = false; this.x = 0; this.y = 0; this.id = null;
-          this.knob.style.transform = 'translate(-50%,-50%)';
-        }
+        if ((e.changedTouches ? t.identifier : 'mouse') === this.id) this.release();
       }
     };
-    el.addEventListener('touchstart', start, { passive: false });
+    el.addEventListener('touchstart', (e) => start(e, false), { passive: false });
     el.addEventListener('touchmove', move, { passive: false });
     el.addEventListener('touchend', end);
     el.addEventListener('touchcancel', end);
-    el.addEventListener('mousedown', start);
+    el.addEventListener('mousedown', (e) => start(e, false));
     window.addEventListener('mousemove', move);
     window.addEventListener('mouseup', end);
+    if (zone) {
+      zone.addEventListener('touchstart', (e) => start(e, true), { passive: false });
+      zone.addEventListener('touchmove', move, { passive: false });
+      zone.addEventListener('touchend', end);
+      zone.addEventListener('touchcancel', end);
+    }
+  }
+
+  release() {
+    this.active = false; this.x = 0; this.y = 0; this.id = null;
+    this.knob.style.transform = 'translate(-50%,-50%)';
+    if (this.el.classList.contains('floating')) {
+      this.el.classList.remove('floating');
+      Object.assign(this.el.style, { left: '', top: '', right: '', bottom: '' });
+    }
   }
 
   move(t) {
-    const r = this.el.getBoundingClientRect();
-    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-    let dx = (t.clientX - cx) / (r.width / 2), dy = (t.clientY - cy) / (r.height / 2);
+    let dx = (t.clientX - this.cx) / this.rad, dy = (t.clientY - this.cy) / this.rad;
     const l = Math.hypot(dx, dy);
     if (l > 1) { dx /= l; dy /= l; }
     this.x = dx; this.y = dy;
     if (l > 0.2) { this.lastX = dx / Math.max(l, 1e-6); this.lastY = dy / Math.max(l, 1e-6); }
-    this.knob.style.transform = `translate(calc(-50% + ${dx * r.width * 0.35}px), calc(-50% + ${dy * r.height * 0.35}px))`;
+    this.knob.style.transform = `translate(calc(-50% + ${dx * this.rad * 0.7}px), calc(-50% + ${dy * this.rad * 0.7}px))`;
   }
 
   get mag() { return Math.hypot(this.x, this.y); }
@@ -72,9 +95,9 @@ export class Controls {
     window.addEventListener('touchstart', () => { this.touchMode = true; this.mouse.has = false; }, { capture: true, passive: true });
   }
 
-  bindSticks(left, right, abilityBtn, reloadBtn) {
-    this.left = new Stick(left);
-    this.right = new Stick(right);
+  bindSticks(left, right, abilityBtn, reloadBtn, zoneL, zoneR) {
+    this.left = new Stick(left, zoneL);
+    this.right = new Stick(right, zoneR);
     const fire = (e) => { this.abilityQueued = true; e.preventDefault(); e.stopPropagation(); };
     abilityBtn.addEventListener('touchstart', fire, { passive: false });
     abilityBtn.addEventListener('mousedown', fire);
@@ -86,19 +109,24 @@ export class Controls {
   }
 
   bindMouse(canvas, isActive) {
-    canvas.addEventListener('pointermove', (e) => {
+    // listen on window: the floating-stick zones lie over the canvas
+    window.addEventListener('pointermove', (e) => {
       if (e.pointerType !== 'mouse' || this.touchMode) return;
       this.mouse.x = (e.clientX / innerWidth) * 2 - 1;
       this.mouse.y = -(e.clientY / innerHeight) * 2 + 1;
       this.mouse.has = true;
     });
-    canvas.addEventListener('pointerdown', (e) => { if (e.pointerType === 'mouse' && !this.touchMode && isActive() && e.button === 0) this.mouse.down = true; });
+    window.addEventListener('pointerdown', (e) => {
+      const onField = e.target === canvas || (e.target.classList && e.target.classList.contains('stick-zone'));
+      if (e.pointerType === 'mouse' && !this.touchMode && isActive() && e.button === 0 && onField) this.mouse.down = true;
+    });
     window.addEventListener('pointerup', (e) => { if (e.pointerType === 'mouse') this.mouse.down = false; });
   }
 
   reset() {
     this.abilityQueued = false; this.reloadQueued = false;
-    if (this.right) { this.right.lastX = 0; this.right.lastY = 0; }
+    if (this.left) this.left.release();
+    if (this.right) { this.right.release(); this.right.lastX = 0; this.right.lastY = 0; }
   }
 
   // Duel input: world-space movement + aim. `assist(ax, az)` may bend the aim toward a nearby enemy.
@@ -112,7 +140,7 @@ export class Controls {
     let ax = 0, az = 0, fire = false, tx, tz;
     if (this.right && this.right.active && this.right.mag > 0.15) {
       ax = this.right.x; az = this.right.y;
-      fire = this.right.mag > 0.45;
+      fire = this.right.mag > 0.4;
       if (this.aimAssist && assist) [ax, az] = assist(ax, az);
     } else if (!this.touchMode && this.mouse.has && unitPos && groundPoint) {
       const p = groundPoint(this.mouse.x, this.mouse.y);

@@ -225,24 +225,28 @@ export class FX {
     this.add(t, life, (m, k) => { m.material.opacity = Math.min(1, k * 2) * (0.6 + 0.4 * Math.sin(k * 30)); });
   }
 
-  text(x, y, z, str, color = '#ff5040') {
+  text(x, y, z, str, color = '#ff5040', life = 1.6) {
     const c = document.createElement('canvas');
-    c.width = 256; c.height = 64;
-    const g = c.getContext('2d');
-    g.font = '28px "Press Start 2P", monospace';
+    const font = '28px "Press Start 2P", monospace';
+    let g = c.getContext('2d');
+    g.font = font;
+    const w = Math.max(256, Math.ceil(g.measureText(str).width + 28));
+    c.width = w; c.height = 64;
+    g = c.getContext('2d');
+    g.font = font;
     g.textAlign = 'center';
     g.lineWidth = 8;
     g.strokeStyle = '#000';
-    g.strokeText(str, 128, 44);
+    g.strokeText(str, w / 2, 44);
     g.fillStyle = color;
-    g.fillText(str, 128, 44);
+    g.fillText(str, w / 2, 44);
     const tex = new THREE.CanvasTexture(c);
     tex.magFilter = THREE.NearestFilter;
     const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
-    sp.scale.set(4, 1, 1);
+    sp.scale.set(4 * w / 256, 1, 1);
     sp.position.set(x, y, z);
     sp.renderOrder = 10;
-    this.add(sp, 1.6, (m, k, dt) => { m.position.y += dt * 1.4; m.material.opacity = Math.min(1, k * 2); }, { dispose: () => tex.dispose() });
+    this.add(sp, life, (m, k, dt) => { m.position.y += dt * 1.4; m.material.opacity = Math.min(1, k * 2); }, { dispose: () => tex.dispose() });
   }
 
   shell(x, y, z) {
@@ -258,13 +262,13 @@ export class FX {
     });
   }
 
-  tracer(a, b, color = 0xffe066) {
+  tracer(a, b, color = 0xffe066, width = 0.08, life = 0.18) {
     const len = a.distanceTo(b);
     const t = new THREE.Mesh(boxGeo, new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(3), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
-    t.scale.set(0.08, 0.08, len);
+    t.scale.set(width, width, len);
     t.position.copy(a).lerp(b, 0.5);
     t.lookAt(b);
-    this.add(t, 0.18, (m, k) => { m.material.opacity = k; });
+    this.add(t, life, (m, k) => { m.material.opacity = k; });
   }
 
   dropIn(model) {

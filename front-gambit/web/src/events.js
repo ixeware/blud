@@ -8,7 +8,12 @@ function score(s, side) {
   s.board.forEach((p) => { if (p && p.s === side && p.t !== 'K') pts += unitDef(s, p).value * (p.hp / p.maxHp); });
   return pts + cityScore(s, side) / 2;
 }
-const leader = (s) => (score(s, 'w') >= score(s, 'b') ? 'w' : 'b');
+// side clearly ahead (score gap of 15%+); comeback events skip even games like 49/51
+function leader(s) {
+  const w = score(s, 'w'), b = score(s, 'b');
+  if (Math.abs(w - b) < 0.15 * Math.max(w, b, 1)) return null;
+  return w > b ? 'w' : 'b';
+}
 const pieces = (s, pred) => s.board.map((p, i) => (p && pred(p, i) ? i : -1)).filter((i) => i >= 0);
 const emptyMid = (s) => { const o = []; for (let r = 2; r <= 5; r++) for (let c = 0; c < 8; c++) if (!s.board[sq(r, c)]) o.push(sq(r, c)); return o; };
 
@@ -19,7 +24,7 @@ export const EVENTS = {
   ev_blizzard: { kind: 'front', title: 'Метель', text: 'Нелётная погода: два хода дроны, авиаудары и B-2 недоступны.',
     apply: (s) => { s.effects.blizzard = 2; } },
   ev_defector: { kind: 'front', title: 'Перебежчик', text: 'Солдат лидирующей армии перешёл линию фронта к отстающим.',
-    can: (s) => pieces(s, (p) => p.s === leader(s) && p.t === 'P').length > 1,
+    can: (s) => leader(s) && pieces(s, (p) => p.s === leader(s) && p.t === 'P').length > 1,
     apply: (s) => {
       const L = leader(s);
       const i = pick(s, pieces(s, (p) => p.s === L && p.t === 'P'));
@@ -29,6 +34,7 @@ export const EVENTS = {
   ev_supplycut: { kind: 'front', title: 'Перебои со снабжением', text: 'Составы сошли с рельсов. Доход обеих сторон в этом раунде урезан вдвое.',
     apply: (s) => { s.effects.supplycut = 1; } },
   ev_aid: { kind: 'front', title: 'Гуманитарная помощь', text: 'Отстающая сторона получает 90 на восстановление.',
+    can: (s) => !!leader(s),
     apply: (s) => { s.money[other(leader(s))] += 90; } },
   ev_epidemic: { kind: 'front', title: 'Эпидемия', text: 'В окопах болезнь: вся пехота теряет по 15 HP (не ниже 1).',
     apply: (s) => { s.board.forEach((p, i) => { if (p && !VEHICLES.has(p.t)) { p.hp = Math.max(1, p.hp - 15); fx(s, { k: 'dmg', sq: i, v: 15 }); } }); } },
@@ -47,7 +53,7 @@ export const EVENTS = {
     } },
   // ---------- historical (rare, once per game) ----------
   ev_civilwar: { kind: 'history', title: 'Гражданская война', text: 'В армии лидера раскол! Два подразделения подняли мятеж и воюют против всех.',
-    can: (s) => pieces(s, (p) => p.s === leader(s) && !['K'].includes(p.t) && unitDef(s, p).value <= 5).length > 4,
+    can: (s) => leader(s) && pieces(s, (p) => p.s === leader(s) && !['K'].includes(p.t) && unitDef(s, p).value <= 5).length > 4,
     apply: (s) => {
       const L = leader(s);
       const opts = pieces(s, (p) => p.s === L && p.t !== 'K' && unitDef(s, p).value <= 5);
@@ -70,6 +76,7 @@ export const EVENTS = {
       for (const j of around(i)) if (!s.board[j] && n < 2) { spawn(s, j, 'P', 'n'); n++; }
     } },
   ev_lendlease: { kind: 'history', title: 'Ленд-лиз', text: 'Союзники прислали помощь отстающей стороне: 200 и танк.',
+    can: (s) => !!leader(s),
     apply: (s) => {
       const side = other(leader(s));
       s.money[side] += 200;
@@ -80,10 +87,11 @@ export const EVENTS = {
     apply: (s) => { s.effects.depression = 3; } },
   ev_pact: { kind: 'history', title: 'Пакт о ненападении', text: 'Один раунд перемирия: никаких атак и ударов.',
     apply: (s) => { s.effects.ceasefire = 1; } },
-  ev_revolution: { kind: 'history', title: 'Революция в тылу', text: 'У лидера бастуют рабочие: одно здание в его тылу разрушено.',
-    can: (s) => s.city[leader(s)].some((b) => b),
-    apply: (s) => { const L = leader(s); const plot = pickSabotageTarget(s, L, true); if (plot >= 0) damageBuilding(s, L, plot, 999); } },
+  ev_revolution: { kind: 'history', title: 'Революция в тылу', text: 'У лидера бастуют рабочие: здание в его тылу сильно повреждено.',
+    can: (s) => leader(s) && s.city[leader(s)].some((b) => b),
+    apply: (s) => { const L = leader(s); const plot = pickSabotageTarget(s, L, true); if (plot >= 0) damageBuilding(s, L, plot, 90); } },
   ev_breakthrough: { kind: 'history', title: 'Технологический прорыв', text: 'Конструкторы отстающих создали новую броню: вся их техника +50 к максимальному HP.',
+    can: (s) => !!leader(s),
     apply: (s) => {
       const side = other(leader(s));
       s.board.forEach((p) => { if (p && p.s === side && VEHICLES.has(p.t)) { p.maxHp += 50; p.hp += 50; } });
@@ -158,6 +166,6 @@ export function triggerEvent(s, id) {
   e.apply(s);
   s.popup = { id, seq: (s.popup ? s.popup.seq : 0) + 1 };
   addLog(s, `СОБЫТИЕ: ${e.title}.`);
-  fx(s, { k: 'event', id });
+  fx(s, { k: 'event', ev: id });
 }
 void SIDE_NAME;

@@ -132,10 +132,13 @@ export class DuelView {
     this.projPool = [];
     this.projGroup = new THREE.Group();
     s.add(this.projGroup);
-    this.laser = new THREE.Mesh(new THREE.BoxGeometry(1, 0.04, 0.04), new THREE.MeshBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.55 }));
+    this.laser = new THREE.Mesh(new THREE.BoxGeometry(1, 0.04, 0.04), new THREE.MeshBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.55, depthTest: false }));
+    this.laser.renderOrder = 20;
     s.add(this.laser);
-    this.reticle = new THREE.Mesh(new THREE.RingGeometry(0.35, 0.5, 16), new THREE.MeshBasicMaterial({ color: 0xff4040, side: THREE.DoubleSide, transparent: true, opacity: 0.8 }));
+    // the reticle sits at the end of the laser, at the same height, so it stays centred on the line
+    this.reticle = new THREE.Mesh(new THREE.RingGeometry(0.35, 0.5, 20), new THREE.MeshBasicMaterial({ color: 0xff4040, side: THREE.DoubleSide, transparent: true, opacity: 0.85, depthTest: false }));
     this.reticle.rotation.x = -Math.PI / 2;
+    this.reticle.renderOrder = 21;
     s.add(this.reticle);
     this.night = night;
     this.camPos = new THREE.Vector3(localTeam === 'def' ? ARENA.w / 2 - 6 : -ARENA.w / 2 + 6, 22, 12);
@@ -279,7 +282,14 @@ export class DuelView {
       else if (kind === 'g') { m.scale.set(0.3, 0.3, 0.3); m.material.color.setHex(0x334422); }
       else if (kind === 'f') { const s0 = 0.4 + (1 - life / 0.46) * 0.9; m.scale.set(s0, s0, s0); m.material.color.setHex(Math.random() < 0.5 ? 0xff8a1c : 0xffd23f); m.position.y = 1.0; }
     });
-    for (const ev of snap.ev || []) this.event(ev);
+    for (const ev of snap.ev || []) {
+      try { this.event(ev); } catch (err) { console.error('duel fx', ev.k, err); }
+    }
+  }
+
+  buzz(pattern) {
+    if (!this.haptics || !navigator.vibrate) return;
+    try { navigator.vibrate(pattern); } catch (e) { /* not allowed */ }
   }
 
   event(ev) {
@@ -296,8 +306,8 @@ export class DuelView {
         break;
       }
       case 'boom': F.explosion(ev.x, 0.3, ev.z, Math.max(1, ev.r * 0.5)); S('boom'); this.shake = Math.max(this.shake, 0.3); break;
-      case 'hit': if (ev.veh) F.spark(ev.x, 1.2, ev.z); else F.blood(ev.x, ev.z); S('hit', 0.5); break;
-      case 'crit': F.text(ev.x, 3.4, ev.z, ev.veh ? 'КРИТ!' : 'ХЕДШОТ!', '#fee761'); F.blood(ev.x, ev.z); S('crit'); break;
+      case 'hit': if (ev.veh) F.spark(ev.x, 1.2, ev.z); else F.blood(ev.x, ev.z); S('hit', 0.5); if (e && e.team === this.localTeam && e.main) this.buzz(15); break;
+      case 'crit': F.text(ev.x, 3.4, ev.z, 'ХЕДШОТ!', '#fee761'); F.blood(ev.x, ev.z); S('crit'); if (e && e.team === this.localTeam && e.main) this.buzz(45); break;
       case 'spark': F.spark(ev.x, 1.1, ev.z); S('ricochet', 0.3); break;
       case 'debris': F.explosion(ev.x, 0.3, ev.z, ev.kind === 'barrel' || ev.kind === 'car' ? 1.8 : 0.8); S(ev.kind === 'barrel' || ev.kind === 'car' ? 'boom' : 'crate'); break;
       case 'collapse': F.cloud(ev.x, ev.z, 0xb0a690); F.explosion(ev.x, 1, ev.z, 2.2); S('collapse'); this.shake = 0.6; break;
@@ -316,6 +326,7 @@ export class DuelView {
       case 'reloaded': if (e && e.team === this.localTeam) S('click'); break;
       case 'death':
         S(['R', 'Q', 'A', 'L', 'T', 'U'].includes(ev.kind) ? 'boom' : 'death');
+        if (e && e.main && this.localTeam) this.buzz(e.team === this.localTeam ? [80, 50, 80] : 40);
         if (this.units.size && e && e.main) { this.slowmo = 1.2; this.killX = ev.x; this.killZ = ev.z; }
         break;
     }
@@ -413,12 +424,19 @@ export class DuelView {
     }
     for (const [, m] of this.objMeshes) if (m.children.length > 3) m.rotation.y += dt * 0.2;
     const lu = this.localUnit();
-    const focus = this.slowmo > 0 && this.killX !== undefined ? new THREE.Vector3(this.killX, 0, this.killZ)
-      : lu ? new THREE.Vector3(lu.x + Math.cos(lu.aim) * 3, 0, lu.z + Math.sin(lu.aim) * 2) : new THREE.Vector3(0, 0, 0);
-    const height = this.slowmo > 0 ? 12 : this.narrow ? 30 : 21;
+    // frame the local fighter together with the nearest opponent, zooming out as they separate
+    let foe = null, foeD = Infinity;
+    if (lu) for (const [, e] of this.units) if (e.alive && e.team !== lu.team) { const d = Math.hypot(e.x - lu.x, e.z - lu.z); if (d < foeD) { foeD = d; foe = e; } }
+    let focus, height = this.slowmo > 0 ? 12 : this.narrow ? 30 : 21;
+    if (this.slowmo > 0 && this.killX !== undefined) focus = new THREE.Vector3(this.killX, 0, this.killZ);
+    else if (lu && foe && foeD < 40) {
+      const k = 0.3;
+      focus = new THREE.Vector3(lu.x + (foe.x - lu.x) * k + Math.cos(lu.aim) * 1.5, 0, lu.z + (foe.z - lu.z) * k + Math.sin(lu.aim) * 1.2);
+      height += Math.min(5, Math.max(0, foeD - 16) * 0.3);
+    } else focus = lu ? new THREE.Vector3(lu.x + Math.cos(lu.aim) * 3, 0, lu.z + Math.sin(lu.aim) * 2) : new THREE.Vector3(0, 0, 0);
     const want = new THREE.Vector3(focus.x, height, focus.z + height * 0.48);
     want.x = Math.max(-ARENA.w / 2 + 6, Math.min(ARENA.w / 2 - 6, want.x));
-    this.camPos.lerp(want, Math.min(1, dt * (this.slowmo > 0 ? 3 : 5)));
+    this.camPos.lerp(want, Math.min(1, dt * (this.slowmo > 0 ? 3 : 3.5)));
     if (this.slowmo > 0) this.slowmo -= dt;
     if (this.shake > 0) {
       this.shake -= dt;
@@ -426,7 +444,7 @@ export class DuelView {
       this.camPos.z += (Math.random() - 0.5) * this.shake * 1.5;
     }
     this.camera.position.copy(this.camPos);
-    this.camera.lookAt(this.camPos.x, 0, this.camPos.z - height * 0.48);
+    this.camera.lookAt(this.camPos.x, 0, this.camPos.z - this.camPos.y * 0.48);
     if (lu && lu.alive && this.localTeam) {
       const len = lu.kind === 'B' ? 18 : 8;
       this.laser.visible = true;
@@ -434,7 +452,7 @@ export class DuelView {
       this.laser.position.set(lu.x + Math.cos(lu.aim) * len / 2, 1.2, lu.z + Math.sin(lu.aim) * len / 2);
       this.laser.rotation.y = -lu.aim;
       this.reticle.visible = true;
-      this.reticle.position.set(lu.x + Math.cos(lu.aim) * len, 0.08, lu.z + Math.sin(lu.aim) * len);
+      this.reticle.position.set(lu.x + Math.cos(lu.aim) * len, 1.2, lu.z + Math.sin(lu.aim) * len);
     } else { this.laser.visible = false; this.reticle.visible = false; }
     updateWind(this.time);
     if (this.clouds) this.clouds.userData.update(dt);
