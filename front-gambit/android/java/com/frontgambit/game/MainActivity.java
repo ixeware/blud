@@ -1,7 +1,14 @@
 package com.frontgambit.game;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.net.Uri;
 import android.os.Bundle;
+import android.provider.MediaStore;
+import android.util.Base64;
+import android.webkit.JavascriptInterface;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
@@ -12,6 +19,7 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 
@@ -19,7 +27,48 @@ public class MainActivity extends Activity {
     // Assets are served from a virtual https origin so the page runs in a secure context
     // (needed for WebRTC multiplayer and storage).
     private static final String HOST = "appassets.androidplatform.net";
+    private static final int REQ_PHOTO = 41;
     private WebView web;
+
+    // JS bridge: lets the unit workshop take a photo or pick one from the gallery for textures
+    public class Bridge {
+        @JavascriptInterface
+        public void pickPhoto(boolean camera) {
+            runOnUiThread(() -> {
+                Intent i;
+                if (camera) i = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+                else { i = new Intent(Intent.ACTION_GET_CONTENT); i.setType("image/*"); }
+                try { startActivityForResult(i, REQ_PHOTO); } catch (Exception e) { /* no app available */ }
+            });
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_PHOTO || resultCode != RESULT_OK || data == null) return;
+        Bitmap bmp = null;
+        try {
+            Uri uri = data.getData();
+            if (uri != null) {
+                try (InputStream in = getContentResolver().openInputStream(uri)) {
+                    BitmapFactory.Options o = new BitmapFactory.Options();
+                    o.inSampleSize = 4;
+                    bmp = BitmapFactory.decodeStream(in, null, o);
+                }
+            } else if (data.getExtras() != null) {
+                bmp = (Bitmap) data.getExtras().get("data");
+            }
+        } catch (Exception e) { bmp = null; }
+        if (bmp == null) return;
+        int s = Math.min(bmp.getWidth(), bmp.getHeight());
+        Bitmap sq = Bitmap.createBitmap(bmp, (bmp.getWidth() - s) / 2, (bmp.getHeight() - s) / 2, s, s);
+        Bitmap small = Bitmap.createScaledBitmap(sq, 128, 128, true);
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        small.compress(Bitmap.CompressFormat.JPEG, 80, out);
+        String url = "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP);
+        web.evaluateJavascript("window.onPhotoPicked && window.onPhotoPicked('" + url + "')", null);
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -43,6 +92,7 @@ public class MainActivity extends Activity {
         web.setBackgroundColor(0xFF1B1F17);
         web.setWebChromeClient(new WebChromeClient());
         web.setWebViewClient(new AssetClient());
+        web.addJavascriptInterface(new Bridge(), "AndroidBridge");
         setContentView(web);
         hideSystemUi();
         web.loadUrl("https://" + HOST + "/index.html");

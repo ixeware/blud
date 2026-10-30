@@ -2,3 +2,4 @@ node_modules/
 build/
 web/dist/
 *.apk.idsig
+.raw_assets/

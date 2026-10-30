@@ -5,20 +5,21 @@ export class Stick {
     this.el = el;
     this.knob = el.querySelector('.knob');
     this.x = 0; this.y = 0; this.active = false; this.id = null;
+    // last meaningful direction, kept after release so aim never snaps back
+    this.lastX = 0; this.lastY = 0;
     const start = (e) => {
       const t = e.changedTouches ? e.changedTouches[0] : e;
       this.id = e.changedTouches ? t.identifier : 'mouse';
       this.active = true;
       this.move(t);
       e.preventDefault();
+      e.stopPropagation();
     };
     const move = (e) => {
       if (!this.active) return;
       const list = e.changedTouches ? [...e.changedTouches] : [e];
-      for (const t of list) {
-        if ((e.changedTouches ? t.identifier : 'mouse') === this.id) this.move(t);
-      }
-      e.preventDefault();
+      for (const t of list) if ((e.changedTouches ? t.identifier : 'mouse') === this.id) this.move(t);
+      if (e.cancelable) e.preventDefault();
     };
     const end = (e) => {
       const list = e.changedTouches ? [...e.changedTouches] : [e];
@@ -45,6 +46,7 @@ export class Stick {
     const l = Math.hypot(dx, dy);
     if (l > 1) { dx /= l; dy /= l; }
     this.x = dx; this.y = dy;
+    if (l > 0.2) { this.lastX = dx / Math.max(l, 1e-6); this.lastY = dy / Math.max(l, 1e-6); }
     this.knob.style.transform = `translate(calc(-50% + ${dx * r.width * 0.35}px), calc(-50% + ${dy * r.height * 0.35}px))`;
   }
 
@@ -56,33 +58,51 @@ export class Controls {
     this.keys = new Set();
     this.mouse = { x: 0, y: 0, down: false, has: false };
     this.abilityQueued = false;
+    this.reloadQueued = false;
+    this.touchMode = false;
+    this.aimAssist = true;
     window.addEventListener('keydown', (e) => {
       this.keys.add(e.code);
       if (e.code === 'Space' || e.code === 'KeyE' || e.code === 'ShiftLeft') this.abilityQueued = true;
+      if (e.code === 'KeyR') this.reloadQueued = true;
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
+    // any touch switches off mouse aiming for good: phones emit fake mouse events at old tap points,
+    // which used to swing the soldier around when the aim stick was released
+    window.addEventListener('touchstart', () => { this.touchMode = true; this.mouse.has = false; }, { capture: true, passive: true });
   }
 
-  bindSticks(left, right, abilityBtn) {
+  bindSticks(left, right, abilityBtn, reloadBtn) {
     this.left = new Stick(left);
     this.right = new Stick(right);
     const fire = (e) => { this.abilityQueued = true; e.preventDefault(); e.stopPropagation(); };
     abilityBtn.addEventListener('touchstart', fire, { passive: false });
     abilityBtn.addEventListener('mousedown', fire);
+    if (reloadBtn) {
+      const rl = (e) => { this.reloadQueued = true; e.preventDefault(); e.stopPropagation(); };
+      reloadBtn.addEventListener('touchstart', rl, { passive: false });
+      reloadBtn.addEventListener('mousedown', rl);
+    }
   }
 
   bindMouse(canvas, isActive) {
-    canvas.addEventListener('mousemove', (e) => {
+    canvas.addEventListener('pointermove', (e) => {
+      if (e.pointerType !== 'mouse' || this.touchMode) return;
       this.mouse.x = (e.clientX / innerWidth) * 2 - 1;
       this.mouse.y = -(e.clientY / innerHeight) * 2 + 1;
       this.mouse.has = true;
     });
-    canvas.addEventListener('mousedown', (e) => { if (isActive() && e.button === 0) this.mouse.down = true; });
-    window.addEventListener('mouseup', () => { this.mouse.down = false; });
+    canvas.addEventListener('pointerdown', (e) => { if (e.pointerType === 'mouse' && !this.touchMode && isActive() && e.button === 0) this.mouse.down = true; });
+    window.addEventListener('pointerup', (e) => { if (e.pointerType === 'mouse') this.mouse.down = false; });
   }
 
-  // Duel input: world-space movement + aim. aimWorld(fn) converts mouse to ground point
-  duelInput(unitPos, groundPoint) {
+  reset() {
+    this.abilityQueued = false; this.reloadQueued = false;
+    if (this.right) { this.right.lastX = 0; this.right.lastY = 0; }
+  }
+
+  // Duel input: world-space movement + aim. `assist(ax, az)` may bend the aim toward a nearby enemy.
+  duelInput(unitPos, groundPoint, assist) {
     let mx = 0, mz = 0;
     if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) mz -= 1;
     if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) mz += 1;
@@ -90,10 +110,11 @@ export class Controls {
     if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) mx += 1;
     if (this.left && this.left.mag > 0.12) { mx = this.left.x; mz = this.left.y; }
     let ax = 0, az = 0, fire = false, tx, tz;
-    if (this.right && this.right.mag > 0.15) {
+    if (this.right && this.right.active && this.right.mag > 0.15) {
       ax = this.right.x; az = this.right.y;
       fire = this.right.mag > 0.45;
-    } else if (this.mouse.has && unitPos && groundPoint) {
+      if (this.aimAssist && assist) [ax, az] = assist(ax, az);
+    } else if (!this.touchMode && this.mouse.has && unitPos && groundPoint) {
       const p = groundPoint(this.mouse.x, this.mouse.y);
       if (p) {
         ax = p.x - unitPos.x; az = p.z - unitPos.z;
@@ -103,9 +124,11 @@ export class Controls {
       }
       fire = this.mouse.down;
     }
-    const ab = this.abilityQueued;
+    // ax = az = 0 means "keep current aim" in the simulation
+    const ab = this.abilityQueued, reload = this.reloadQueued;
     this.abilityQueued = false;
-    const r = { mx: +mx.toFixed(2), mz: +mz.toFixed(2), ax: +ax.toFixed(3), az: +az.toFixed(3), fire, ab };
+    this.reloadQueued = false;
+    const r = { mx: +mx.toFixed(2), mz: +mz.toFixed(2), ax: +ax.toFixed(3), az: +az.toFixed(3), fire, ab, reload };
     if (tx !== undefined) { r.tx = tx; r.tz = tz; }
     return r;
   }

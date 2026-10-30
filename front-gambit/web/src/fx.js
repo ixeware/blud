@@ -137,6 +137,68 @@ export class FX {
     this.items[this.items.length - 1].dispose = () => tex.dispose();
   }
 
+  shell(x, y, z) {
+    const s = new THREE.Mesh(boxGeo, new THREE.MeshBasicMaterial({ color: 0xd9a032 }));
+    s.scale.set(0.06, 0.06, 0.14);
+    s.position.set(x, y, z);
+    const v = new THREE.Vector3((Math.random() - 0.5) * 3, 3 + Math.random() * 2, (Math.random() - 0.5) * 3);
+    this.add(s, 0.6, (m, k, dt) => {
+      v.y -= 20 * dt;
+      m.position.addScaledVector(v, dt);
+      if (m.position.y < 0.04) { m.position.y = 0.04; v.multiplyScalar(0.3); v.y = Math.abs(v.y); }
+      m.rotation.x += dt * 20;
+    });
+  }
+
+  tracer(a, b, color = 0xffe066) {
+    const len = a.distanceTo(b);
+    const t = new THREE.Mesh(boxGeo, new THREE.MeshBasicMaterial({ color, transparent: true }));
+    t.scale.set(0.08, 0.08, len);
+    t.position.copy(a).lerp(b, 0.5);
+    t.lookAt(b);
+    this.add(t, 0.18, (m, k) => { m.material.opacity = k; });
+  }
+
+  dropIn(model) {
+    if (!model) return;
+    const y0 = model.position.y;
+    this.items.push({ mesh: new THREE.Object3D(), life: 0.5, max: 0.5, update: (m, k) => { model.position.y = y0 + k * k * 8; model.scale.y = model.scale.x * (1 - 0.25 * Math.sin((1 - k) * Math.PI)); } });
+  }
+
+  fireBurst(x, z) {
+    for (let i = 0; i < 10; i++) {
+      const f = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({ color: i % 2 ? 0xff8a1c : 0xffd23f, transparent: true }));
+      const ox = (Math.random() - 0.5) * 3, oz = (Math.random() - 0.5) * 3;
+      f.position.set(x + ox, 0.5, z + oz);
+      const s0 = 0.4 + Math.random() * 0.6;
+      this.add(f, 0.9 + Math.random() * 0.5, (m, k, dt) => { m.position.y += dt * 2.5; m.scale.setScalar(s0 * (0.5 + k)); m.material.opacity = k; });
+    }
+    this.smoke(x, 1, z, 0x222222, 1);
+  }
+
+  cloud(x, z, color) {
+    for (let i = 0; i < 9; i++) {
+      const p = new THREE.Mesh(sphereGeo, new THREE.MeshLambertMaterial({ color, transparent: true, opacity: 0.6, depthWrite: false }));
+      const a = Math.random() * Math.PI * 2, r = Math.random() * 3;
+      p.position.set(x + Math.cos(a) * r, 0.5, z + Math.sin(a) * r);
+      const s0 = 0.8 + Math.random();
+      this.add(p, 1.8, (m, k, dt) => { m.position.y += dt * 0.6; m.scale.setScalar(s0 * (1 + (1 - k) * 1.8)); m.material.opacity = 0.6 * k; });
+    }
+  }
+
+  flakBurst(x, y, z) {
+    const f = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true }));
+    f.position.set(x, y, z);
+    this.add(f, 0.9, (m, k) => { m.scale.setScalar(0.3 + (1 - k) * 1.2); m.material.opacity = k * 0.8; });
+    this.muzzle(x, y, z, 0.5);
+  }
+
+  bubble(x, y, z, color) {
+    const b = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.4, depthWrite: false }));
+    b.position.set(x, y, z);
+    this.add(b, 0.8, (m, k) => { m.scale.setScalar(1.8 + (1 - k) * 0.6); m.material.opacity = 0.45 * k; });
+  }
+
   update(dt) {
     for (const it of this.items) {
       it.life -= dt;

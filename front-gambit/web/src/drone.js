@@ -1,15 +1,19 @@
 // FPV kamikaze drone mission over the board (host authoritative).
 import { rng, sqToWorld, TILE } from './rng.js';
-import { UNITS } from './rules.js';
+import { unitDef } from './units.js';
+import { hasPassive } from './core.js';
+
+export const FACTORY_POS = (side, k) => ({ x: -15 + k * 10, z: side === 'w' ? 24 : -24 });
 
 export const DRONE_BATTERY = 20;
 const SPEED = 10;
 
-export function pieceTop(t) {
-  return t === 'Q' ? 3.6 : t === 'R' ? 2.0 : 2.1;
+export function pieceTop(t, air) {
+  if (t === 'Q' || air) return 3.6;
+  return { R: 2.0, A: 2.3, L: 2.5, T: 2.7 }[t] || 2.1;
 }
-export function pieceBottom(t) {
-  return t === 'Q' ? 1.6 : 0;
+export function pieceBottom(t, air) {
+  return t === 'Q' || air ? 1.6 : 0;
 }
 
 export class DroneSim {
@@ -19,10 +23,12 @@ export class DroneSim {
     this.ctrl = opts.ctrl; // 'local'|'remote'|'ai'
     this.R = rng(rt.seed);
     this.jam = !!rt.ew;
+    this.decoy = !!rt.decoy;
+    this.aaT = 0;
     const home = this.side === 'w' ? 1 : -1;
     this.x = (this.R() - 0.5) * 8;
     this.z = home * (4.5 * TILE);
-    this.y = 5;
+    this.y = 7;
     this.yaw = this.side === 'w' ? -Math.PI / 2 : Math.PI / 2; // forward = (cos yaw, sin yaw)
     this.pitch = 0;
     this.roll = 0;
@@ -38,8 +44,11 @@ export class DroneSim {
     state.board.forEach((p, i) => {
       if (!p) return;
       const w = sqToWorld(i);
-      this.pieces.push({ sq: i, t: p.t, s: p.s, x: w.x, z: w.z, v: UNITS[p.t].value });
+      const d = unitDef(state, p);
+      this.pieces.push({ sq: i, t: p.t, s: p.s, x: w.x, z: w.z, v: d.value, air: !!d.air, aa: hasPassive(state, p, 'aacover') });
     });
+    const opp = this.side === 'w' ? 'b' : 'w';
+    this.factories = (state.factories[opp] || []).map((f, k) => ({ ...FACTORY_POS(opp, k), idx: k, side: opp }));
     // AI target
     const en = this.pieces.filter((p) => p.s !== this.side);
     en.sort((a, b) => (b.v === 100 ? 6 : b.v) - (a.v === 100 ? 6 : a.v) + (this.R() - 0.5) * 3);
@@ -55,7 +64,7 @@ export class DroneSim {
     while (d > Math.PI) d -= Math.PI * 2;
     while (d < -Math.PI) d += Math.PI * 2;
     const dist = Math.hypot(dx, dz);
-    const targetY = dist < 9 ? (pieceTop(t.t) + pieceBottom(t.t)) / 2 : 4;
+    const targetY = dist < 9 ? (pieceTop(t.t, t.air) + pieceBottom(t.t, t.air)) / 2 : 4;
     return { mx: Math.max(-1, Math.min(1, d * 2)), my: Math.max(-1, Math.min(1, (targetY - this.y) * 0.8)), ab: dist > 20 };
   }
 
@@ -84,14 +93,25 @@ export class DroneSim {
     this.battery -= dt * (jammed ? 1.7 : 1) * (this.boost > 0 ? 1.5 : 1);
     this.jammed = jammed;
     // collisions
-    const LIM = 6 * TILE;
+    // enemy air defence can shoot the drone down
+    for (const p of this.pieces) {
+      if (!p.aa || p.s === this.side) continue;
+      if (Math.hypot(p.x - this.x, p.z - this.z) < 7 && this.y < 7) {
+        this.aaT += dt;
+        if (this.aaT > 0.25) { this.aaT = 0; this.events.push({ k: 'flak', x: this.x, y: this.y, z: this.z }); if (this.R() < 0.18) return this.shotDown(); }
+      }
+    }
+    for (const f of this.factories) {
+      if (Math.abs(f.x - this.x) < 2.4 && Math.abs(f.z - this.z) < 1.9 && this.y < 3.6) return this.explodeFactory(f);
+    }
+    const LIM = 7.5 * TILE;
     if (Math.abs(this.x) > LIM || Math.abs(this.z) > LIM) {
       return this.finish([], 'Дрон улетел за пределы связи');
     }
     for (const p of this.pieces) {
       if (p.s === this.side) continue;
       const d = Math.hypot(p.x - this.x, p.z - this.z);
-      if (d < 1.4 && this.y < pieceTop(p.t) && this.y > pieceBottom(p.t) - 0.3) {
+      if (d < 1.4 && this.y < pieceTop(p.t, p.air) && this.y > pieceBottom(p.t, p.air) - 0.3) {
         return this.explodeAt(p);
       }
     }
@@ -99,7 +119,21 @@ export class DroneSim {
     if (this.battery <= 0) return this.finish([], 'Батарея разряжена');
   }
 
+  shotDown() {
+    this.events.push({ k: 'boom', x: this.x, y: this.y, z: this.z });
+    this.finish([], 'Дрон сбит ПВО!');
+  }
+
+  explodeFactory(f) {
+    this.events.push({ k: 'boom', x: this.x, y: this.y, z: this.z });
+    if (this.decoy) return this.finish([], 'Это был макет завода!');
+    this.over = true;
+    this.result = { hits: [], factory: { side: f.side, idx: f.idx, dmg: 60 } };
+    this.msg = 'Завод поражён!';
+  }
+
   explodeAt(direct) {
+    if (this.decoy) { this.events.push({ k: 'boom', x: this.x, y: this.y, z: this.z }); return this.finish([], 'Дрон ушёл в ложную цель!'); }
     const hits = [];
     if (direct) hits.push({ sq: direct.sq, dmg: direct.t === 'R' ? 120 : direct.t === 'Q' ? 95 : 80 });
     for (const p of this.pieces) {

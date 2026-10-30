@@ -11,7 +11,8 @@ rm -rf "$OUT" && mkdir -p "$OUT"/{res,gen,classes,assets/www}
 echo "== bundle web"
 npx esbuild web/src/main.js --bundle --minify --format=iife --target=es2019 --outfile=web/dist/game.js --log-level=warning
 cp web/index.html web/style.css web/dist/
-cp web/dist/index.html web/dist/style.css web/dist/game.js "$OUT/assets/www/"
+rm -rf web/dist/assets && cp -r web/assets web/dist/assets
+cp -r web/dist/index.html web/dist/style.css web/dist/game.js web/dist/assets "$OUT/assets/www/"
 
 echo "== resources"
 "$BT/aapt2" compile --dir android/res -o "$OUT/res/res.zip"
