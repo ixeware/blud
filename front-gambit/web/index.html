@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Фронтовой Гамбит</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="letterbox" class="letterbox"><div class="lb-top"></div><div class="lb-bot"><span class="lb-skip">Коснитесь экрана — пропустить</span></div></div>
+
+<!-- MAIN MENU -->
+<div id="menu" class="screen menu-bg">
+  <div class="menu-wrap">
+    <div class="menu-left">
+      <div class="logo">
+        <img class="px emblem" src="assets/bg/emblem.png" alt="">
+        <div>
+          <div class="logo-top">ФРОНТОВОЙ<br>ГАМБИТ</div>
+          <div class="logo-sub">FPS-шахматы войны</div>
+        </div>
+      </div>
+      <div class="menu-buttons">
+        <button class="btn big" data-act="ai"><img class="px" src="assets/icons/robot.png" alt="">Против ИИ</button>
+        <button class="btn big" data-act="hot"><img class="px" src="assets/icons/people.png" alt="">Вдвоём на одном устройстве</button>
+        <button class="btn big blue" data-act="host"><img class="px" src="assets/icons/globe.png" alt="">Онлайн: создать комнату</button>
+        <button class="btn big blue" data-act="join"><img class="px" src="assets/icons/key.png" alt="">Онлайн: войти по коду</button>
+        <button class="btn big gold" data-act="workshop"><img class="px" src="assets/icons/wrench.png" alt="">Мастерская юнитов</button>
+        <button class="btn" data-act="help"><img class="px" src="assets/icons/book.png" alt="">Как играть</button>
+      </div>
+    </div>
+    <div class="panel settings">
+      <div class="plaque">Настройки</div>
+      <label>Сложность ИИ
+        <select id="setDiff"><option value="0">Новобранец</option><option value="1" selected>Солдат</option><option value="2">Ветеран</option></select>
+      </label>
+      <label>Бои при атаке
+        <select id="setDuel"><option value="manual" selected>Управлять вручную</option><option value="auto">Автобой</option></select>
+      </label>
+      <label>Графика
+        <select id="setGfx"><option value="high">Высокая (тени)</option><option value="low">Быстрая</option></select>
+      </label>
+      <label>Музыка <input type="range" id="setMusic" min="0" max="100" value="60"></label>
+      <label>Звуки <input type="range" id="setSfx" min="0" max="100" value="80"></label>
+      <label class="row"><input type="checkbox" id="setCine" checked> Катсцены</label>
+      <label class="row"><input type="checkbox" id="setAssist" checked> Помощь в прицеливании</label>
+      <label class="row"><input type="checkbox" id="setVibro" checked> Вибрация</label>
+    </div>
+  </div>
+  <div class="ver">v2.2 · онлайн через бесплатный сервер PeerJS</div>
+</div>
+
+<!-- MATCH SETUP -->
+<div id="setup" class="screen dim hidden">
+  <div class="panel wide">
+    <div class="plaque">Подготовка к войне</div>
+    <div class="setup-maps">
+      <button class="map-card on" data-map="field"><img class="px" src="assets/bg/map_field.png" alt=""><span>Поле</span><small>Нефтевышки, радары и аэродромы. Река и фермы.</small></button>
+      <button class="map-card" data-map="city"><img class="px" src="assets/bg/map_city.png" alt=""><span>Город</span><small>Дома дают укрытие, метро, аварии и пожары.</small></button>
+    </div>
+    <div class="setup-opts">
+      <label class="row"><input type="checkbox" id="optEvents" checked> Случайные и исторические события</label>
+      <label class="row"><input type="checkbox" id="optCards" checked> Колода приказов</label>
+      <label class="row"><input type="checkbox" id="optCustom" checked> Юниты из мастерской</label>
+    </div>
+    <div class="row-btns">
+      <button class="btn ghost" id="setupBack"><img class="px" src="assets/icons/back.png" alt="">Назад</button>
+      <button class="btn gold big" id="setupGo"><img class="px" src="assets/icons/flag_w.png" alt="">В бой!</button>
+    </div>
+  </div>
+</div>
+
+<!-- LOBBY -->
+<div id="lobby" class="screen dim hidden">
+  <div class="panel center">
+    <div class="plaque" id="lobbyTitle">Онлайн</div>
+    <div id="hostBox">
+      <p>Код комнаты — отправьте его другу:</p>
+      <div id="roomCode" class="code">.....</div>
+      <p id="lobbyStatus" class="muted">Подключение к серверу…</p>
+    </div>
+    <div id="joinBox" class="hidden">
+      <p>Введите код комнаты:</p>
+      <input id="joinCode" maxlength="5" autocomplete="off" autocapitalize="characters" placeholder="ABCDE">
+      <button class="btn" id="joinGo"><img class="px" src="assets/icons/key.png" alt="">Подключиться</button>
+      <p id="joinStatus" class="muted"></p>
+    </div>
+    <button class="btn ghost" id="lobbyBack"><img class="px" src="assets/icons/back.png" alt="">Назад</button>
+  </div>
+</div>
+
+<!-- HELP -->
+<div id="help" class="screen dim hidden">
+  <div class="panel wide scroll" id="helpBody"></div>
+</div>
+
+<!-- BOARD HUD -->
+<div id="hud" class="hidden">
+  <div class="topbar">
+    <div class="tb-left">
+      <div id="turnBadge" class="plate"><img class="px" id="turnFlag" src="assets/icons/flag_w.png" alt=""><span id="turnText">Ход 1/60</span></div>
+      <div id="actBadge" class="plate small"></div>
+      <div id="checkBadge" class="plate small check hidden"><img class="px" src="assets/icons/warning.png" alt="">ШАХ</div>
+    </div>
+    <div class="tb-mid">
+      <div class="terr"><div id="terrW"></div><div id="terrB"></div></div>
+      <div class="terr-label"><span id="terrWl">50%</span><span>ЛИНИЯ ФРОНТА</span><span id="terrBl">50%</span></div>
+      <div id="effects" class="effects"></div>
+    </div>
+    <div class="tb-right">
+      <div class="plate money"><img class="px" src="assets/icons/coin.png" alt=""><span id="money">100</span><span id="income" class="inc">+47</span></div>
+      <div class="plate small"><img class="px" src="assets/icons/factory.png" alt=""><span id="factCount">1</span></div>
+      <div class="plate small"><img class="px" src="assets/icons/people.png" alt=""><span id="armyCount">16</span></div>
+      <div id="ping" class="plate small hidden"><img class="px" src="assets/icons/signal.png" alt=""><span id="pingVal">—</span></div>
+      <button class="sq" id="menuBtn"><img class="px" src="assets/icons/menu.png" alt=""></button>
+    </div>
+  </div>
+  <div class="toolbar">
+    <button class="sq big" id="shopBtn" title="Штаб"><img class="px" src="assets/icons/shop.png" alt=""><span>Штаб</span></button>
+    <button class="sq big" id="cityBtn" title="Тыл"><img class="px" src="assets/icons/city.png" alt=""><span>Тыл</span></button>
+    <button class="sq big" id="cardsBtn" title="Приказы"><img class="px" src="assets/icons/cards.png" alt=""><span>Приказы</span><b id="cardsCount" class="badge-n hidden">0</b></button>
+    <button class="sq big" id="logBtn" title="Журнал"><img class="px" src="assets/icons/log.png" alt=""><span>Журнал</span></button>
+    <button class="sq big b2 hidden" id="b2Btn" title="B-2"><img class="px" src="assets/icons/b2.png" alt=""><span>B-2</span></button>
+  </div>
+  <div id="log" class="log"></div>
+  <button class="btn gold end-btn" id="endBtn"><img class="px" src="assets/icons/end_turn.png" alt="">Конец хода</button>
+  <div id="info" class="panel info hidden">
+    <div class="info-head">
+      <div class="slot por"><img class="px" id="infoPor" src="" alt=""></div>
+      <div class="info-main">
+        <div class="plaque small" id="infoName">Пехотинец</div>
+        <div class="info-sub"><span id="infoRank"></span><span id="infoHp"></span></div>
+        <div class="hpblocks" id="infoHpBar"></div>
+        <div class="info-tags" id="infoTags"></div>
+      </div>
+      <button class="sq tiny" id="infoClose"><img class="px" src="assets/icons/close.png" alt=""></button>
+    </div>
+    <div class="ab-row" id="abRow"></div>
+    <div class="info-desc" id="infoDesc"></div>
+  </div>
+  <div id="targetBar" class="target-bar hidden"><span id="targetText">Выберите клетку</span><button class="btn red small" id="targetCancel">Отмена</button></div>
+  <div id="waitBar" class="wait-bar hidden">Ход противника…</div>
+</div>
+
+<!-- REAR CITY -->
+<div id="cityHud" class="hidden">
+  <div class="city-top">
+    <div class="plaque">Тыловой город</div>
+    <div class="plate money"><img class="px" src="assets/icons/coin.png" alt=""><span id="cityMoney">0</span></div>
+    <button class="btn gold" id="cityExit"><img class="px" src="assets/icons/back.png" alt="">К фронту</button>
+  </div>
+  <div class="panel city-panel"><div id="cityBody"></div></div>
+</div>
+
+<!-- SHOP -->
+<div id="shop" class="screen dim hidden">
+  <div class="panel shop">
+    <div class="shop-tabs" id="shopTabs"></div>
+    <div class="shop-main">
+      <div class="shop-head"><div class="plaque">Штаб снабжения</div><div class="plate money"><img class="px" src="assets/icons/coin.png" alt=""><span id="shopMoney">0</span></div><button class="sq" data-close><img class="px" src="assets/icons/close.png" alt=""></button></div>
+      <div id="shopGrid" class="shop-grid"></div>
+    </div>
+  </div>
+</div>
+
+<!-- CARDS -->
+<div id="cards" class="screen dim hidden">
+  <div class="panel wide">
+    <div class="shop-head"><div class="plaque" id="cardsTitle">Приказы</div><button class="sq" data-close><img class="px" src="assets/icons/close.png" alt=""></button></div>
+    <div id="cardsGrid" class="cards-grid"></div>
+  </div>
+</div>
+
+<!-- LOG -->
+<div id="journal" class="screen dim hidden">
+  <div class="panel wide">
+    <div class="shop-head"><div class="plaque">Журнал боевых действий</div><button class="sq" data-close><img class="px" src="assets/icons/close.png" alt=""></button></div>
+    <div id="journalList" class="journal"></div>
+  </div>
+</div>
+
+<!-- EVENT POPUP -->
+<div id="eventPop" class="screen dim hidden">
+  <div class="panel event">
+    <div class="plaque" id="evTitle">Событие</div>
+    <div class="slot ev-art"><img class="px" id="evArt" src="" alt=""></div>
+    <p id="evText"></p>
+    <button class="btn gold" id="evOk"><img class="px" src="assets/icons/check.png" alt="">Принять</button>
+  </div>
+</div>
+
+<!-- SABOTAGE CHOICE -->
+<div id="sabo" class="screen dim hidden">
+  <div class="panel center">
+    <div class="plaque">Цель диверсии</div>
+    <button class="btn big" data-sabo="factory"><img class="px" src="assets/icons/factory.png" alt="">Удар по зданию (40%, −70 прочности)</button>
+    <button class="btn big" data-sabo="rail"><img class="px" src="assets/icons/shop_rail.png" alt="">Подорвать 2 участка ж/д</button>
+    <button class="btn ghost" data-close>Отмена</button>
+  </div>
+</div>
+
+<!-- PAUSE -->
+<div id="pause" class="screen dim hidden">
+  <div class="panel center">
+    <div class="plaque">Пауза</div>
+    <button class="btn big" data-close><img class="px" src="assets/icons/check.png" alt="">Продолжить</button>
+    <button class="btn" id="helpBtn2"><img class="px" src="assets/icons/book.png" alt="">Как играть</button>
+    <button class="btn" id="toggleSnd"><img class="px" id="sndIcon" src="assets/icons/sound_on.png" alt="">Звук</button>
+    <button class="btn red" id="quitBtn"><img class="px" src="assets/icons/back.png" alt="">Выйти в меню</button>
+  </div>
+</div>
+
+<!-- DUEL HUD -->
+<div id="duelHud" class="hidden">
+  <div class="duel-top">
+    <div class="fighter left"><div class="slot mini"><img class="px" id="dPorA" src="" alt=""></div><div class="fcol"><div id="dNameA" class="fname">Атака</div><div class="hpblocks" id="dHpA"></div></div></div>
+    <div id="dTimer" class="plaque timer">75</div>
+    <div class="fighter right"><div class="fcol"><div id="dNameD" class="fname">Оборона</div><div class="hpblocks" id="dHpD"></div></div><div class="slot mini"><img class="px" id="dPorD" src="" alt=""></div></div>
+  </div>
+  <div id="ammo" class="ammo plate"><img class="px" src="assets/icons/bullet.png" alt=""><span id="ammoVal">30/30</span><div class="reload-bar"><div id="reloadFill"></div></div></div>
+  <div id="spectate" class="spectate plate hidden">Наблюдение за боем…</div>
+</div>
+
+<!-- VS INTRO -->
+<div id="vs" class="vs hidden">
+  <div class="vs-side left"><div class="slot vs-por"><img class="px" id="vsPorA" src="" alt=""></div><div class="plaque" id="vsNameA"></div><div class="vs-tags" id="vsTagsA"></div><div class="vs-sup" id="vsSupA"></div></div>
+  <div class="vs-mid">VS</div>
+  <div class="vs-side right"><div class="slot vs-por"><img class="px" id="vsPorD" src="" alt=""></div><div class="plaque" id="vsNameD"></div><div class="vs-tags" id="vsTagsD"></div><div class="vs-sup" id="vsSupD"></div></div>
+</div>
+
+<!-- DRONE HUD -->
+<div id="droneHud" class="hidden">
+  <div class="fpv-noise" id="fpvNoise"></div>
+  <div class="fpv-frame">
+    <div class="fpv-cross">+</div>
+    <div class="fpv-tl">REC <span id="fpvSide">FPV</span></div>
+    <div class="fpv-tr"><span id="fpvBat">100</span>%</div>
+    <div class="fpv-bl">ALT <span id="fpvAlt">5.0</span></div>
+    <div class="fpv-br" id="fpvSig">СИГНАЛ ||||</div>
+    <div class="fpv-help" id="fpvHelp">Стик: поворот и высота. Кнопка — ускорение.</div>
+  </div>
+</div>
+
+<!-- STICKS -->
+<div id="sticks" class="hidden">
+  <div class="stick-zone left" id="zoneL"></div>
+  <div class="stick-zone right" id="zoneR"></div>
+  <div class="stick left" id="stickL"><div class="knob"></div><div class="stick-label">ДВИЖЕНИЕ</div></div>
+  <div class="stick right" id="stickR"><div class="knob"></div><div class="stick-label">ОГОНЬ</div></div>
+  <button class="ability" id="abBtn"><img class="px" id="abIcon" src="" alt=""><span id="abName">Граната</span><div id="abCd" class="cd"></div></button>
+  <button class="reload-btn" id="reloadBtn"><img class="px" src="assets/icons/reload.png" alt=""></button>
+</div>
+
+<!-- WORKSHOP -->
+<div id="workshop" class="hidden">
+  <div class="ws-left panel">
+    <div class="plaque small">Детали</div>
+    <div class="ws-prims" id="wsPrims"></div>
+    <div class="ws-parts" id="wsParts"></div>
+    <div class="ws-tools">
+      <button class="sq" id="wsMove" title="Перемещение"><img class="px" src="assets/icons/g_move.png" alt=""></button>
+      <button class="sq" id="wsRot" title="Поворот"><img class="px" src="assets/icons/g_rotate.png" alt=""></button>
+      <button class="sq" id="wsScale" title="Размер"><img class="px" src="assets/icons/g_scale.png" alt=""></button>
+      <button class="sq" id="wsDup" title="Копия"><img class="px" src="assets/icons/copy.png" alt=""></button>
+      <button class="sq" id="wsDel" title="Удалить"><img class="px" src="assets/icons/trash.png" alt=""></button>
+    </div>
+  </div>
+  <div class="ws-right panel">
+    <div class="ws-tabs" id="wsTabs"></div>
+    <div class="ws-body" id="wsBody"></div>
+  </div>
+  <div class="ws-top">
+    <button class="btn ghost" id="wsBack"><img class="px" src="assets/icons/back.png" alt="">Меню</button>
+    <input id="wsName" maxlength="18" placeholder="Название юнита">
+    <div class="plate" id="wsPoints">0/24</div>
+    <button class="btn gold" id="wsSave"><img class="px" src="assets/icons/check.png" alt="">Сохранить</button>
+  </div>
+  <input type="file" id="wsFile" accept="image/*" class="hidden">
+</div>
+
+<div id="banner" class="banner hidden"><div id="bannerText"></div><div id="bannerSub"></div></div>
+<div id="toast" class="toast hidden"></div>
+
+<!-- GAME OVER -->
+<div id="over" class="screen dim hidden">
+  <div class="panel center">
+    <img class="px over-ico" id="overIco" src="assets/icons/trophy.png" alt="">
+    <div class="plaque big" id="overTitle">ПОБЕДА</div>
+    <div id="overStats" class="stats"></div>
+    <button class="btn big gold" id="overMenu"><img class="px" src="assets/icons/back.png" alt="">В главное меню</button>
+  </div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
